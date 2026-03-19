@@ -44,7 +44,7 @@ def get_volumes(current_user=Depends(get_current_user)):
     return list_volumes()
 
 
-@router.get("/")
+@router.get("")
 def list_jobs(current_user=Depends(get_current_user), db=Depends(get_db)):
     jobs = db.query(BackupJob).all()
     result = []
@@ -74,7 +74,7 @@ def list_jobs(current_user=Depends(get_current_user), db=Depends(get_db)):
     return result
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 def create_job(
     req: CreateJobRequest,
     current_user=Depends(get_current_user),

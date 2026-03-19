@@ -70,7 +70,7 @@ def _configure_rclone(dest_type: str, remote_name: str, config: dict) -> None:
         )
 
 
-@router.get("/")
+@router.get("")
 def list_destinations(current_user=Depends(get_current_user), db=Depends(get_db)):
     destinations = db.query(Destination).all()
     result = []
@@ -91,7 +91,7 @@ def list_destinations(current_user=Depends(get_current_user), db=Depends(get_db)
     return result
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 def create_destination(
     req: CreateDestinationRequest,
     current_user=Depends(get_current_user),

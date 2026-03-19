@@ -9,7 +9,7 @@ from database import BackupJob, BackupRun, get_db
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("")
 def dashboard_summary(current_user=Depends(get_current_user), db=Depends(get_db)):
     total_jobs = db.query(BackupJob).count()
     enabled_jobs = db.query(BackupJob).filter(BackupJob.enabled == True).count()
