@@ -1,0 +1,98 @@
+from datetime import datetime
+from typing import Generator
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    create_engine,
+)
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from config import DATABASE_URL
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    totp_secret = Column(String, nullable=True)
+    totp_enabled = Column(Boolean, default=False, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Destination(Base):
+    __tablename__ = "destinations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)  # b2 / smb / sftp / local
+    config_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BackupJob(Base):
+    __tablename__ = "backup_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    containers = Column(Text, nullable=False, default="[]")   # JSON list of container names
+    volumes = Column(Text, nullable=False, default="[]")      # JSON list of {source, name}
+    db_type = Column(String, nullable=True)                   # mysql / postgres / None
+    db_container = Column(String, nullable=True)
+    db_name = Column(String, nullable=True)
+    db_user = Column(String, nullable=True)
+    db_password_encrypted = Column(Text, nullable=True)
+    destination_id = Column(Integer, ForeignKey("destinations.id"), nullable=False)
+    schedule_cron = Column(String, nullable=False)
+    pre_stop = Column(Boolean, default=False, nullable=False)
+    retention_days = Column(Integer, default=30, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_run_at = Column(DateTime, nullable=True)
+    last_run_status = Column(String, nullable=True)
+
+
+class BackupRun(Base):
+    __tablename__ = "backup_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("backup_jobs.id", ondelete="SET NULL"), nullable=True)
+    job_name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="running")  # running / success / failed
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    destination_path = Column(String, nullable=True)
+    log_lines = Column(Text, nullable=False, default="[]")   # JSON list of strings
+    error = Column(Text, nullable=True)
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def init_db() -> None:
+    Base.metadata.create_all(bind=engine)
