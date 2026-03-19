@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from config import ADMIN_PASSWORD, BACKUP_TMP_DIR
+from config import ADMIN_PASSWORD, ADMIN_RESET, BACKUP_TMP_DIR
 from database import BackupJob, User, get_db, init_db
 
 logging.basicConfig(level=logging.INFO)
@@ -20,11 +20,16 @@ async def lifespan(app: FastAPI):
 
     init_db()
 
-    # Create admin user if no users exist
+    # Create or reset admin user
     db = next(get_db())
     try:
-        if db.query(User).count() == 0:
-            from auth import hash_password
+        from auth import hash_password
+        existing = db.query(User).filter(User.username == "admin").first()
+        if existing and ADMIN_RESET:
+            existing.password_hash = hash_password(ADMIN_PASSWORD)
+            db.commit()
+            logger.info("Admin user password reset (ADMIN_RESET=true). Password length: %d", len(ADMIN_PASSWORD))
+        elif not existing:
             admin = User(
                 username="admin",
                 password_hash=hash_password(ADMIN_PASSWORD),
@@ -32,7 +37,9 @@ async def lifespan(app: FastAPI):
             )
             db.add(admin)
             db.commit()
-            logger.info("Created default admin user")
+            logger.info("Created admin user. Password length: %d", len(ADMIN_PASSWORD))
+        else:
+            logger.info("Admin user exists. Password length in env: %d (set ADMIN_RESET=true to force reset)", len(ADMIN_PASSWORD))
     finally:
         db.close()
 

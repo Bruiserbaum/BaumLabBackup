@@ -1,7 +1,8 @@
 import os
 
-SECRET_KEY = os.getenv("SECRET_KEY", "changeme-please-set-a-real-secret-key")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+SECRET_KEY = os.getenv("SECRET_KEY", "changeme-please-set-a-real-secret-key").strip()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin").strip()
+ADMIN_RESET = os.getenv("ADMIN_RESET", "false").strip().lower() == "true"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 480
 DATABASE_URL = "sqlite:////data/baumlabbackup.db"
