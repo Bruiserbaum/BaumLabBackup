@@ -40,6 +40,11 @@ docker compose up -d
 | `ADMIN_PASSWORD` | Admin password on first start | — |
 | `WEB_PORT` | Host port for the web UI | `8765` |
 | `TZ` | Container timezone | `America/New_York` |
+| `OIDC_ENABLED` | Set to `true` to enable Authentik SSO login | `false` |
+| `OIDC_ISSUER` | Authentik provider URL | — |
+| `OIDC_CLIENT_ID` | OAuth2 client ID from Authentik | — |
+| `OIDC_CLIENT_SECRET` | OAuth2 client secret from Authentik | — |
+| `OIDC_REDIRECT_URI` | Full callback URL registered in Authentik | — |
 
 ## Destinations
 
@@ -54,6 +59,20 @@ SSH file transfer. Supports password or key-file authentication.
 
 ### Local
 Local path inside the container (mount an external path into the container as needed).
+
+## Authentik SSO (Optional)
+
+BaumLabBackup supports OIDC login via Authentik. When enabled, a **Login with Authentik** button appears on the login page alongside the standard username/password form.
+
+### Setup
+
+1. In Authentik, create an **OAuth2/OpenID Provider** and an **Application** for it.
+2. Set the redirect URI to: `http://your-server:8765/api/auth/oidc/callback`
+   (or `https://backup.yourdomain.com/api/auth/oidc/callback` if behind a reverse proxy)
+3. Set the OIDC env vars in `.env` and uncomment them in `docker-compose.yml`.
+4. Rebuild and restart: `docker compose up -d --build`
+
+First-time SSO users get a local account created automatically. Existing password accounts are unaffected.
 
 ## Security Notes
 

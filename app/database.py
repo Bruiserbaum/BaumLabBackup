@@ -37,6 +37,7 @@ class User(Base):
     totp_enabled = Column(Boolean, default=False, nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    oidc_sub = Column(String, unique=True, nullable=True, index=True)
 
 
 class Destination(Base):
@@ -96,3 +97,19 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+
+
+def migrate_db() -> None:
+    """Add new columns to existing tables (SQLite ALTER TABLE, idempotent)."""
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE users ADD COLUMN oidc_sub TEXT UNIQUE",
+        "CREATE INDEX IF NOT EXISTS ix_users_oidc_sub ON users (oidc_sub)",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # Column / index already exists

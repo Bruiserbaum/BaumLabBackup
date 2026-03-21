@@ -1,6 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+import secrets
+from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urlencode
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
+from jose import jwt as jose_jwt, JWTError
+from pydantic import BaseModel
 
 from auth import (
     create_access_token,
@@ -11,9 +18,27 @@ from auth import (
     verify_password,
     verify_totp,
 )
+from config import (
+    SECRET_KEY, ALGORITHM,
+    OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URI,
+)
 from database import User, get_db
 
 router = APIRouter()
+
+# ── OIDC discovery cache ──────────────────────────────────────────────────────
+_oidc_discovery: dict = {}
+
+
+def _get_oidc_discovery() -> dict:
+    global _oidc_discovery
+    if _oidc_discovery:
+        return _oidc_discovery
+    url = OIDC_ISSUER + ".well-known/openid-configuration"
+    resp = httpx.get(url, timeout=10)
+    resp.raise_for_status()
+    _oidc_discovery = resp.json()
+    return _oidc_discovery
 
 
 class LoginRequest(BaseModel):
@@ -112,3 +137,99 @@ def totp_disable(
     user.totp_secret = None
     db.commit()
     return {"message": "TOTP disabled successfully"}
+
+
+# ── OIDC / Authentik SSO ──────────────────────────────────────────────────────
+
+@router.get("/config")
+def auth_config():
+    """Public endpoint — returns which auth methods are available."""
+    return {"oidc_enabled": OIDC_ENABLED}
+
+
+@router.get("/oidc/login")
+def oidc_login():
+    """Redirect the browser to Authentik's authorization endpoint."""
+    if not OIDC_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC is not enabled")
+    expire = datetime.utcnow() + timedelta(minutes=10)
+    state = jose_jwt.encode(
+        {"nonce": secrets.token_urlsafe(16), "exp": expire},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+    discovery = _get_oidc_discovery()
+    params = urlencode({
+        "response_type": "code",
+        "client_id": OIDC_CLIENT_ID,
+        "redirect_uri": OIDC_REDIRECT_URI,
+        "scope": "openid profile email",
+        "state": state,
+    })
+    return RedirectResponse(f"{discovery['authorization_endpoint']}?{params}", status_code=302)
+
+
+@router.get("/oidc/callback")
+def oidc_callback(
+    code: str = None,
+    state: str = None,
+    error: str = None,
+    db=Depends(get_db),
+):
+    """Authentik redirects here after login. Exchange code, find/create user, issue JWT."""
+    if error:
+        return RedirectResponse(f"/?oidc_error={error}")
+    if not code or not state:
+        return RedirectResponse("/?oidc_error=missing_params")
+
+    # Verify CSRF state
+    try:
+        jose_jwt.decode(state, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return RedirectResponse("/?oidc_error=invalid_state")
+
+    # Exchange code for tokens + fetch userinfo
+    try:
+        discovery = _get_oidc_discovery()
+        with httpx.Client(timeout=10) as client:
+            token_resp = client.post(
+                discovery["token_endpoint"],
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": OIDC_REDIRECT_URI,
+                    "client_id": OIDC_CLIENT_ID,
+                    "client_secret": OIDC_CLIENT_SECRET,
+                },
+            )
+            token_resp.raise_for_status()
+            access_token = token_resp.json()["access_token"]
+
+            userinfo_resp = client.get(
+                discovery["userinfo_endpoint"],
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            userinfo_resp.raise_for_status()
+            userinfo = userinfo_resp.json()
+    except Exception:
+        return RedirectResponse("/?oidc_error=token_exchange_failed")
+
+    sub = userinfo.get("sub")
+    if not sub:
+        return RedirectResponse("/?oidc_error=no_sub")
+
+    # Find or create local user
+    user = db.query(User).filter(User.oidc_sub == sub).first()
+    if not user:
+        preferred = userinfo.get("preferred_username") or userinfo.get("email") or sub
+        username = preferred
+        counter = 1
+        while db.query(User).filter(User.username == username).first():
+            username = f"{preferred}_{counter}"
+            counter += 1
+        user = User(username=username, password_hash="", oidc_sub=sub, is_admin=False)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    local_token = create_access_token({"sub": user.username})
+    return RedirectResponse(f"/?token={local_token}", status_code=302)

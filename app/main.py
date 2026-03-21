@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from config import ADMIN_PASSWORD, ADMIN_RESET, BACKUP_TMP_DIR
-from database import BackupJob, User, get_db, init_db
+from database import BackupJob, User, get_db, init_db, migrate_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     os.makedirs("/data", exist_ok=True)
 
     init_db()
+    migrate_db()
 
     # Create or reset admin user
     db = next(get_db())

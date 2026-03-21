@@ -10,7 +10,26 @@ const state = {
   user: null,
   page: 'dashboard',
   dashboardTimer: null,
+  oidcEnabled: false,
+  oidcError: null,
 };
+
+// ---- OIDC callback handling ----
+// Handle ?token= or ?oidc_error= redirected from /api/auth/oidc/callback
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const urlToken = params.get('token');
+  const urlError = params.get('oidc_error');
+  if (urlToken) {
+    state.token = urlToken;
+    localStorage.setItem('blb_token', urlToken);
+    window.history.replaceState({}, '', '/');
+  }
+  if (urlError) {
+    state.oidcError = 'SSO login failed: ' + urlError.replace(/_/g, ' ');
+    window.history.replaceState({}, '', '/');
+  }
+}());
 
 // ---- API helper ----
 async function api(method, path, body) {
@@ -101,8 +120,15 @@ function navigate(page) {
 function renderApp() {
   const app = el('app');
   if (!state.token) {
-    app.innerHTML = renderLoginPage();
-    bindLoginPage();
+    // Fetch OIDC config once, then render login page
+    fetch('/api/auth/config')
+      .then(r => r.json())
+      .then(d => { state.oidcEnabled = !!d.oidc_enabled; })
+      .catch(() => {})
+      .finally(() => {
+        app.innerHTML = renderLoginPage();
+        bindLoginPage();
+      });
     return;
   }
   app.innerHTML = renderShell();
@@ -160,6 +186,15 @@ function renderMain() {
 // ============================================================
 
 function renderLoginPage() {
+  const oidcBtn = state.oidcEnabled ? `
+    <div style="display:flex;align-items:center;gap:8px;margin:8px 0">
+      <div style="flex:1;height:1px;background:var(--border,#333)"></div>
+      <span style="font-size:11px;color:var(--text-muted,#888)">or</span>
+      <div style="flex:1;height:1px;background:var(--border,#333)"></div>
+    </div>
+    <a href="/api/auth/oidc/login" style="text-decoration:none">
+      <button class="btn btn-secondary w-full" type="button">Login with Authentik</button>
+    </a>` : '';
   return `
     <div class="login-wrapper">
       <div class="login-card">
@@ -178,12 +213,19 @@ function renderLoginPage() {
         </div>
         <div id="login-error" style="margin-bottom:8px"></div>
         <button class="btn btn-primary w-full" id="btn-login">Sign In</button>
+        ${oidcBtn}
       </div>
     </div>
   `;
 }
 
 function bindLoginPage() {
+  // Show OIDC error if redirected back after a failed SSO attempt
+  if (state.oidcError) {
+    el('login-error').innerHTML = `<div class="form-error">${esc(state.oidcError)}</div>`;
+    state.oidcError = null;
+  }
+
   const btn = el('btn-login');
   const doLogin = async () => {
     btn.disabled = true;
