@@ -155,6 +155,7 @@ function renderShell() {
       <div class="navbar-links">
         <button class="nav-link ${state.page === 'dashboard' ? 'active' : ''}" data-page="dashboard">Dashboard</button>
         <button class="nav-link ${state.page === 'jobs' ? 'active' : ''}" data-page="jobs">Jobs</button>
+        <button class="nav-link ${state.page === 'stacks' ? 'active' : ''}" data-page="stacks">Stacks</button>
         <button class="nav-link ${state.page === 'destinations' ? 'active' : ''}" data-page="destinations">Destinations</button>
         <button class="nav-link ${state.page === 'history' ? 'active' : ''}" data-page="history">History</button>
         <button class="nav-link ${state.page === 'settings' ? 'active' : ''}" data-page="settings">Settings</button>
@@ -174,6 +175,7 @@ function renderMain() {
   switch (state.page) {
     case 'dashboard':    loadDashboard(mc); break;
     case 'jobs':         loadJobs(mc); break;
+    case 'stacks':       loadStacks(mc); break;
     case 'destinations': loadDestinations(mc); break;
     case 'history':      loadHistory(mc, 1); break;
     case 'settings':     loadSettings(mc); break;
@@ -629,6 +631,514 @@ async function submitAddJob() {
 }
 
 // ============================================================
+// STACKS PAGE
+// ============================================================
+
+async function loadStacks(container) {
+  container.innerHTML = `
+    <div class="page-header">
+      <h2>Stacks</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" id="btn-detect-stacks">Detect from Docker</button>
+        <button class="btn btn-primary" id="btn-add-stack">+ Add Stack</button>
+      </div>
+    </div>
+    <div id="stacks-table-wrap"><p style="color:var(--text-muted)">Loading...</p></div>
+    <div id="stack-run-log-wrap" style="margin-top:24px"></div>
+  `;
+
+  el('btn-add-stack').addEventListener('click', () => openAddStackModal());
+  el('btn-detect-stacks').addEventListener('click', detectAndFillStacks);
+
+  await refreshStacksTable();
+}
+
+async function refreshStacksTable() {
+  const wrap = el('stacks-table-wrap');
+  if (!wrap) return;
+  try {
+    const [stacks, dests] = await Promise.all([
+      api('GET', '/stacks'),
+      api('GET', '/destinations'),
+    ]);
+    if (!stacks || stacks.length === 0) {
+      wrap.innerHTML = `<p style="color:var(--text-muted)">No stacks configured. Use <strong>Detect from Docker</strong> or <strong>+ Add Stack</strong>.</p>`;
+      return;
+    }
+    const destMap = Object.fromEntries((dests || []).map(d => [d.id, d.name]));
+    wrap.innerHTML = `
+      <table class="data-table">
+        <thead><tr>
+          <th>Name</th><th>Repo</th><th>Project</th><th>Destination</th>
+          <th>Last Backup</th><th>Next Backup</th><th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody>
+          ${stacks.map(s => `
+            <tr>
+              <td><strong>${esc(s.name)}</strong></td>
+              <td style="font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                <a href="${esc(s.repo_url)}" target="_blank" title="${esc(s.repo_url)}" style="color:var(--accent)">${esc(s.repo_url)}</a>
+              </td>
+              <td><code>${esc(s.compose_project)}</code></td>
+              <td>${esc(destMap[s.destination_id] || s.destination_id)}</td>
+              <td>${formatDate(s.last_backup_at)}</td>
+              <td>${s.schedule_cron ? (formatDate(s.next_run) || s.schedule_cron) : '<span style="color:var(--text-muted)">Manual</span>'}</td>
+              <td>${s.last_backup_status ? statusBadge(s.last_backup_status) : '<span style="color:var(--text-muted)">—</span>'}</td>
+              <td>
+                <div style="display:flex;gap:4px;flex-wrap:wrap">
+                  <button class="btn btn-secondary btn-sm" onclick="triggerStackBackup(${s.id}, '${esc(s.name)}')">Backup</button>
+                  <button class="btn btn-secondary btn-sm" onclick="openBrowseBackups(${s.id}, '${esc(s.name)}')">Restore</button>
+                  <button class="btn btn-secondary btn-sm" onclick="openStackRunLog(${s.id})">Logs</button>
+                  <button class="btn btn-secondary btn-sm" onclick="openEditStackModal(${s.id})">Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick="deleteStack(${s.id}, '${esc(s.name)}')">Delete</button>
+                </div>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    wrap.innerHTML = `<div class="form-error">${esc(e.message)}</div>`;
+  }
+}
+
+// ── Detect stacks ─────────────────────────────────────────────────────────────
+
+async function detectAndFillStacks() {
+  const btn = el('btn-detect-stacks');
+  btn.textContent = 'Detecting...';
+  btn.disabled = true;
+  try {
+    const detected = await api('GET', '/stacks/detect');
+    if (!detected || detected.length === 0) {
+      alert('No Docker Compose stacks detected. Make sure containers are running and were started with docker compose.');
+      return;
+    }
+    openDetectModal(detected);
+  } catch (e) {
+    alert('Detection failed: ' + e.message);
+  } finally {
+    btn.textContent = 'Detect from Docker';
+    btn.disabled = false;
+  }
+}
+
+function openDetectModal(detected) {
+  const rows = detected.map((s, i) => `
+    <tr>
+      <td><input type="checkbox" id="det-chk-${i}" checked></td>
+      <td><strong>${esc(s.compose_project)}</strong></td>
+      <td style="font-size:12px">${s.containers.slice(0, 3).map(esc).join(', ')}${s.containers.length > 3 ? ` +${s.containers.length - 3} more` : ''}</td>
+      <td style="font-size:12px">${s.volumes.map(esc).join(', ') || '<em>none</em>'}</td>
+      <td style="font-size:12px;max-width:160px;word-break:break-all">${esc(s.env_file)}</td>
+    </tr>`).join('');
+
+  showModal('Detected Compose Stacks', `
+    <p style="color:var(--text-muted);margin-bottom:12px">Select stacks to import. You can edit repo URL and destination after adding.</p>
+    <table class="data-table" style="margin-bottom:12px">
+      <thead><tr><th></th><th>Project</th><th>Containers</th><th>Volumes</th><th>.env path</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div id="detect-error"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="btn-import-detected">Import Selected</button>
+    </div>
+  `);
+
+  el('btn-import-detected').addEventListener('click', async () => {
+    const selected = detected.filter((_, i) => el(`det-chk-${i}`)?.checked);
+    if (!selected.length) { showError('detect-error', 'Select at least one stack.'); return; }
+
+    // For each selected, open the add-stack modal pre-filled
+    closeModal();
+    // Open first one; user can add others manually
+    if (selected.length === 1) {
+      openAddStackModal(selected[0]);
+    } else {
+      // Queue: open modals one after another
+      for (const s of selected) {
+        await new Promise(resolve => openAddStackModal(s, resolve));
+      }
+    }
+  });
+}
+
+// ── Add / Edit Stack modal ────────────────────────────────────────────────────
+
+async function openAddStackModal(prefill = null, onDone = null) {
+  const [dests, vols] = await Promise.all([
+    api('GET', '/destinations'),
+    api('GET', '/stacks/volumes'),
+  ]);
+
+  const destOptions = (dests || []).map(d =>
+    `<option value="${d.id}">${esc(d.name)} (${esc(d.type)})</option>`).join('');
+
+  const volChecks = (vols || []).map(v => {
+    const checked = prefill && prefill.volumes && prefill.volumes.includes(v.name) ? 'checked' : '';
+    return `<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <input type="checkbox" name="vol" value="${esc(v.name)}" ${checked}> ${esc(v.name)}
+    </label>`;
+  }).join('');
+
+  showModal('Add Stack', `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Stack Name *</label>
+        <input class="form-control" id="s-name" value="${esc(prefill?.compose_project || '')}" placeholder="e.g. BaumLab">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Repository URL *</label>
+        <input class="form-control" id="s-repo" value="${esc(prefill?.repo_url || '')}" placeholder="https://github.com/Bruiserbaum/BaumLab">
+      </div>
+      <div class="form-group">
+        <label>Branch</label>
+        <input class="form-control" id="s-branch" value="${esc(prefill?.repo_branch || 'main')}">
+      </div>
+      <div class="form-group">
+        <label>Compose Project Name *</label>
+        <input class="form-control" id="s-project" value="${esc(prefill?.compose_project || '')}" placeholder="baumlab">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>.env File Path (on host) *</label>
+        <input class="form-control" id="s-env" value="${esc(prefill?.env_file || prefill?.env_path || '')}" placeholder="/opt/baumlab/.env">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Volumes to Back Up</label>
+        <div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
+          ${volChecks || '<p style="color:var(--text-muted);margin:0">No volumes found</p>'}
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Destination *</label>
+        <select class="form-control" id="s-dest">${destOptions}</select>
+      </div>
+      <div class="form-group">
+        <label>Retention (days)</label>
+        <input class="form-control" id="s-retention" type="number" value="30" min="1">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Schedule (cron) <span style="color:var(--text-muted);font-size:11px">— leave blank for manual only</span></label>
+        <input class="form-control" id="s-cron" value="" placeholder="0 3 * * *  (daily at 3am)">
+      </div>
+    </div>
+    <div id="add-stack-error"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="btn-save-stack">Save Stack</button>
+    </div>
+  `);
+
+  el('btn-save-stack').addEventListener('click', async () => {
+    const name = el('s-name').value.trim();
+    const repo_url = el('s-repo').value.trim();
+    const repo_branch = el('s-branch').value.trim() || 'main';
+    const compose_project = el('s-project').value.trim();
+    const env_path = el('s-env').value.trim();
+    const destination_id = parseInt(el('s-dest').value);
+    const retention_days = parseInt(el('s-retention').value) || 30;
+    const schedule_cron = el('s-cron').value.trim() || null;
+    const volumes = [...document.querySelectorAll('input[name="vol"]:checked')].map(c => c.value);
+
+    if (!name || !repo_url || !compose_project) {
+      showError('add-stack-error', 'Name, Repo URL, and Compose Project are required.');
+      return;
+    }
+
+    try {
+      el('btn-save-stack').disabled = true;
+      await api('POST', '/stacks', { name, repo_url, repo_branch, env_path, compose_project, volumes, destination_id, schedule_cron, retention_days });
+      closeModal();
+      await refreshStacksTable();
+      if (onDone) onDone();
+    } catch (e) {
+      showError('add-stack-error', e.message);
+      el('btn-save-stack').disabled = false;
+    }
+  });
+}
+
+async function openEditStackModal(stackId) {
+  const [stack, dests, vols] = await Promise.all([
+    api('GET', `/stacks`).then(all => (all || []).find(s => s.id === stackId)),
+    api('GET', '/destinations'),
+    api('GET', '/stacks/volumes'),
+  ]);
+  if (!stack) return alert('Stack not found');
+
+  const destOptions = (dests || []).map(d =>
+    `<option value="${d.id}" ${d.id === stack.destination_id ? 'selected' : ''}>${esc(d.name)} (${esc(d.type)})</option>`).join('');
+
+  const volChecks = (vols || []).map(v => {
+    const checked = stack.volumes.includes(v.name) ? 'checked' : '';
+    return `<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <input type="checkbox" name="vol" value="${esc(v.name)}" ${checked}> ${esc(v.name)}
+    </label>`;
+  }).join('');
+
+  showModal('Edit Stack', `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Stack Name *</label>
+        <input class="form-control" id="s-name" value="${esc(stack.name)}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Repository URL *</label>
+        <input class="form-control" id="s-repo" value="${esc(stack.repo_url)}">
+      </div>
+      <div class="form-group">
+        <label>Branch</label>
+        <input class="form-control" id="s-branch" value="${esc(stack.repo_branch)}">
+      </div>
+      <div class="form-group">
+        <label>Compose Project Name *</label>
+        <input class="form-control" id="s-project" value="${esc(stack.compose_project)}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>.env File Path (on host)</label>
+        <input class="form-control" id="s-env" value="${esc(stack.env_path)}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Volumes to Back Up</label>
+        <div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
+          ${volChecks || '<p style="color:var(--text-muted);margin:0">No volumes found</p>'}
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Destination *</label>
+        <select class="form-control" id="s-dest">${destOptions}</select>
+      </div>
+      <div class="form-group">
+        <label>Retention (days)</label>
+        <input class="form-control" id="s-retention" type="number" value="${stack.retention_days}" min="1">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>Schedule (cron) <span style="color:var(--text-muted);font-size:11px">— leave blank for manual only</span></label>
+        <input class="form-control" id="s-cron" value="${esc(stack.schedule_cron || '')}">
+      </div>
+    </div>
+    <div id="edit-stack-error"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="btn-update-stack">Save Changes</button>
+    </div>
+  `);
+
+  el('btn-update-stack').addEventListener('click', async () => {
+    const name = el('s-name').value.trim();
+    const repo_url = el('s-repo').value.trim();
+    const repo_branch = el('s-branch').value.trim() || 'main';
+    const compose_project = el('s-project').value.trim();
+    const env_path = el('s-env').value.trim();
+    const destination_id = parseInt(el('s-dest').value);
+    const retention_days = parseInt(el('s-retention').value) || 30;
+    const schedule_cron = el('s-cron').value.trim() || null;
+    const volumes = [...document.querySelectorAll('input[name="vol"]:checked')].map(c => c.value);
+
+    if (!name || !repo_url || !compose_project) {
+      showError('edit-stack-error', 'Name, Repo URL, and Compose Project are required.');
+      return;
+    }
+
+    try {
+      el('btn-update-stack').disabled = true;
+      await api('PUT', `/stacks/${stackId}`, { name, repo_url, repo_branch, env_path, compose_project, volumes, destination_id, schedule_cron, retention_days });
+      closeModal();
+      await refreshStacksTable();
+    } catch (e) {
+      showError('edit-stack-error', e.message);
+      el('btn-update-stack').disabled = false;
+    }
+  });
+}
+
+// ── Backup / delete ───────────────────────────────────────────────────────────
+
+async function triggerStackBackup(stackId, stackName) {
+  try {
+    await api('POST', `/stacks/${stackId}/backup`);
+    alert(`Backup started for "${stackName}". Check Logs for progress.`);
+    await refreshStacksTable();
+  } catch (e) {
+    alert('Failed to trigger backup: ' + e.message);
+  }
+}
+
+async function deleteStack(stackId, stackName) {
+  if (!confirm(`Delete stack "${stackName}"? Existing backups on the destination are NOT deleted.`)) return;
+  try {
+    await api('DELETE', `/stacks/${stackId}`);
+    await refreshStacksTable();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+// ── Browse backups / restore ──────────────────────────────────────────────────
+
+async function openBrowseBackups(stackId, stackName) {
+  showModal(`Restore: ${stackName}`, `<p style="color:var(--text-muted)">Loading available backups...</p>`);
+  try {
+    const data = await api('GET', `/stacks/${stackId}/backups`);
+    const backups = data?.backups || [];
+    if (!backups.length) {
+      setModalBody(`<p style="color:var(--text-muted)">No backups found at <code>${esc(data?.remote_path || '')}</code>.</p>
+        <button class="btn btn-secondary" onclick="closeModal()">Close</button>`);
+      return;
+    }
+    const rows = backups.map(b => `
+      <tr>
+        <td style="font-size:12px">${esc(b.name)}</td>
+        <td>${formatBytes(b.size)}</td>
+        <td>${b.modified ? new Date(b.modified).toLocaleString() : '—'}</td>
+        <td><button class="btn btn-primary btn-sm" onclick="openRestoreModal(${stackId}, '${esc(stackName)}', '${esc(b.name)}')">Restore</button></td>
+      </tr>`).join('');
+
+    setModalBody(`
+      <p style="color:var(--text-muted);margin-bottom:8px">Remote: <code>${esc(data?.remote_path || '')}</code></p>
+      <table class="data-table" style="margin-bottom:12px">
+        <thead><tr><th>Archive</th><th>Size</th><th>Date</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+    `);
+  } catch (e) {
+    setModalBody(`<div class="form-error">${esc(e.message)}</div><button class="btn btn-secondary" onclick="closeModal()">Close</button>`);
+  }
+}
+
+function openRestoreModal(stackId, stackName, backupFilename) {
+  const defaultTarget = `/opt/${stackName.toLowerCase().replace(/\s+/g, '-')}`;
+  setModalBody(`
+    <h3 style="margin-bottom:12px">Restore from: <code style="font-size:13px">${esc(backupFilename)}</code></h3>
+    <div class="form-group">
+      <label>Clone target directory *</label>
+      <input class="form-control" id="restore-target" value="${esc(defaultTarget)}" placeholder="/opt/baumlab">
+      <small style="color:var(--text-muted)">The repo will be cloned here and .env placed inside.</small>
+    </div>
+    <div class="form-group">
+      <label style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="restore-autostart" checked>
+        Auto-start stack after restore (<code>docker compose up -d</code>)
+      </label>
+    </div>
+    <div id="restore-error"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-secondary" onclick="openBrowseBackups(${stackId}, '${esc(stackName)}')">← Back</button>
+      <button class="btn btn-primary" id="btn-start-restore">Start Restore</button>
+    </div>
+  `);
+
+  el('btn-start-restore').addEventListener('click', async () => {
+    const restore_target_dir = el('restore-target').value.trim();
+    const auto_start = el('restore-autostart').checked;
+    if (!restore_target_dir) { showError('restore-error', 'Target directory is required.'); return; }
+
+    try {
+      el('btn-start-restore').disabled = true;
+      const resp = await api('POST', `/stacks/${stackId}/restore`, {
+        backup_filename: backupFilename,
+        restore_target_dir,
+        auto_start,
+      });
+      closeModal();
+      alert(`Restore started. Click "Logs" on the stack row to monitor progress.`);
+      await refreshStacksTable();
+    } catch (e) {
+      showError('restore-error', e.message);
+      el('btn-start-restore').disabled = false;
+    }
+  });
+}
+
+// ── Stack run log viewer ──────────────────────────────────────────────────────
+
+async function openStackRunLog(stackId) {
+  const wrap = el('stack-run-log-wrap');
+  if (!wrap) return;
+
+  wrap.innerHTML = `<p style="color:var(--text-muted)">Loading run history...</p>`;
+  try {
+    const data = await api('GET', `/stacks/runs?stack_id=${stackId}&page=1`);
+    const runs = data?.runs || [];
+    if (!runs.length) {
+      wrap.innerHTML = `<p style="color:var(--text-muted)">No runs yet for this stack.</p>`;
+      return;
+    }
+    const rows = runs.map(r => `
+      <tr style="cursor:pointer" onclick="showStackRunDetail(${r.id})">
+        <td>${statusBadge(r.status)}</td>
+        <td><span class="badge" style="background:var(--border);color:var(--text)">${esc(r.run_type)}</span></td>
+        <td>${formatDate(r.started_at)}</td>
+        <td>${formatDuration(r.started_at, r.completed_at)}</td>
+        <td>${formatBytes(r.size_bytes)}</td>
+      </tr>`).join('');
+
+    wrap.innerHTML = `
+      <h3 style="margin-bottom:8px">Run History</h3>
+      <table class="data-table">
+        <thead><tr><th>Status</th><th>Type</th><th>Started</th><th>Duration</th><th>Size</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    wrap.innerHTML = `<div class="form-error">${esc(e.message)}</div>`;
+  }
+}
+
+async function showStackRunDetail(runId) {
+  showModal('Run Log', `<p style="color:var(--text-muted)">Loading...</p>`);
+  try {
+    const run = await api('GET', `/stacks/runs/${runId}`);
+    renderStackRunModal(run);
+
+    // Poll while running
+    if (run.status === 'running') {
+      _stackLogPollTimer = setInterval(async () => {
+        const updated = await api('GET', `/stacks/runs/${runId}`);
+        if (!updated) { clearInterval(_stackLogPollTimer); return; }
+        renderStackRunModal(updated);
+        if (updated.status !== 'running') {
+          clearInterval(_stackLogPollTimer);
+          await refreshStacksTable();
+        }
+      }, 2000);
+    }
+  } catch (e) {
+    setModalBody(`<div class="form-error">${esc(e.message)}</div><button class="btn btn-secondary" onclick="closeModal()">Close</button>`);
+  }
+}
+
+function renderStackRunModal(run) {
+  const logHtml = (run.log_lines || []).map(line => {
+    const cls = /error/i.test(line) ? 'color:#e06c75' : /warning|warn/i.test(line) ? 'color:#e5c07b' : /ok|success|complete/i.test(line) ? 'color:#98c379' : 'color:var(--text)';
+    return `<div style="${cls};font-size:12px;line-height:1.5">${esc(line)}</div>`;
+  }).join('');
+
+  const typeLabel = run.run_type === 'restore' ? '🔄 Restore' : '💾 Backup';
+  setModalBody(`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;font-size:13px">
+      <div><strong>Stack:</strong> ${esc(run.stack_name)}</div>
+      <div><strong>Type:</strong> ${typeLabel}</div>
+      <div><strong>Status:</strong> ${statusBadge(run.status)}</div>
+      <div><strong>Started:</strong> ${formatDate(run.started_at)}</div>
+      <div><strong>Duration:</strong> ${formatDuration(run.started_at, run.completed_at)}</div>
+      <div><strong>Size:</strong> ${formatBytes(run.size_bytes)}</div>
+      ${run.restore_target ? `<div style="grid-column:1/-1"><strong>Target:</strong> <code>${esc(run.restore_target)}</code></div>` : ''}
+    </div>
+    ${run.error ? `<div class="form-error" style="margin-bottom:8px">${esc(run.error)}</div>` : ''}
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:320px;overflow-y:auto;font-family:monospace">
+      ${logHtml || '<span style="color:var(--text-muted)">No log lines yet...</span>'}
+    </div>
+    ${run.status === 'running' ? '<p style="color:var(--text-muted);font-size:12px;margin-top:8px">Auto-refreshing every 2s...</p>' : ''}
+    <div style="display:flex;justify-content:flex-end;margin-top:12px">
+      <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+    </div>
+  `);
+}
+
+// ============================================================
 // DESTINATIONS PAGE
 // ============================================================
 
@@ -1036,9 +1546,47 @@ async function submitDisableTotp() {
 // MODAL UTILITY
 // ============================================================
 
+let _stackLogPollTimer = null;
+
+/**
+ * showModal — creates a dynamic full-screen overlay modal used by the Stacks page.
+ * The existing Jobs/Destinations pages use inline CSS-class modals (closeModal(id)).
+ */
+function showModal(title, bodyHtml) {
+  let overlay = el('modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'modal-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center';
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:24px;width:min(720px,95vw);max-height:90vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2 style="margin:0">${esc(title)}</h2>
+        <button class="btn btn-secondary btn-sm" onclick="closeModal()">✕</button>
+      </div>
+      <div id="modal-body">${bodyHtml}</div>
+    </div>
+  `;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+}
+
+function setModalBody(html) {
+  const b = el('modal-body');
+  if (b) b.innerHTML = html;
+}
+
 function closeModal(overlayId) {
-  const overlay = el(overlayId);
-  if (overlay) overlay.remove();
+  if (overlayId) {
+    const overlay = el(overlayId);
+    if (overlay) overlay.remove();
+  } else {
+    // Dynamic stack modal
+    if (_stackLogPollTimer) { clearInterval(_stackLogPollTimer); _stackLogPollTimer = null; }
+    const o = el('modal-overlay');
+    if (o) o.remove();
+  }
 }
 
 // Close modal on overlay click

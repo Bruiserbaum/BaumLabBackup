@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any
 
 import docker
@@ -92,6 +93,59 @@ def get_container_volumes(name: str) -> list[dict[str, Any]]:
         return result
     except DockerException as exc:
         logger.error("get_container_volumes %s failed: %s", name, exc)
+        return []
+
+
+def detect_compose_stacks() -> list[dict[str, Any]]:
+    """
+    Detect Docker Compose stacks by reading container labels.
+    Groups containers by com.docker.compose.project label.
+    Returns one entry per project with containers, volumes, and best-guess .env path.
+    Works with stacks deployed via Portainer, docker compose, or docker-compose.
+    """
+    try:
+        client = _client()
+        containers = client.containers.list(all=True)
+
+        projects: dict[str, dict] = {}
+        for c in containers:
+            labels = c.labels or {}
+            project = labels.get("com.docker.compose.project", "")
+            if not project:
+                continue
+
+            if project not in projects:
+                working_dir = labels.get("com.docker.compose.project.working_dir", "")
+                config_files = labels.get("com.docker.compose.project.config_files", "")
+                projects[project] = {
+                    "compose_project": project,
+                    "working_dir": working_dir,
+                    "config_files": config_files,
+                    "containers": [],
+                    "volumes": set(),
+                    "env_file": os.path.join(working_dir, ".env") if working_dir else "",
+                }
+
+            projects[project]["containers"].append(c.name)
+
+            for m in (c.attrs.get("Mounts") or []):
+                if m.get("Type") == "volume" and m.get("Name"):
+                    projects[project]["volumes"].add(m["Name"])
+
+        result = []
+        for data in projects.values():
+            result.append({
+                "compose_project": data["compose_project"],
+                "working_dir": data["working_dir"],
+                "env_file": data["env_file"],
+                "containers": sorted(data["containers"]),
+                "volumes": sorted(data["volumes"]),
+            })
+
+        return sorted(result, key=lambda x: x["compose_project"])
+
+    except DockerException as exc:
+        logger.error("detect_compose_stacks failed: %s", exc)
         return []
 
 

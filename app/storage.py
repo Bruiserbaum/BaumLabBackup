@@ -1,4 +1,5 @@
 import configparser
+import json
 import logging
 import os
 import subprocess
@@ -122,6 +123,38 @@ def configure_local(remote_name: str, path: str) -> None:
 def upload(local_path: str, remote_name: str, remote_path: str) -> tuple[bool, str]:
     dest = f"{remote_name}:{remote_path}"
     rc, stdout, stderr = _rclone("copy", local_path, dest, "--progress")
+    if rc == 0:
+        return True, stdout
+    return False, stderr
+
+
+def list_backups(remote_name: str, remote_path: str) -> list[dict]:
+    """List backup archives at remote_path. Returns [{name, size, modified}] sorted newest first."""
+    dest = f"{remote_name}:{remote_path}"
+    rc, stdout, stderr = _rclone("lsjson", dest, "--files-only", "--no-modtime=false")
+    if rc != 0:
+        logger.warning("list_backups failed for %s: %s", dest, stderr)
+        return []
+    try:
+        items = json.loads(stdout)
+        result = [
+            {
+                "name": item.get("Name", ""),
+                "size": item.get("Size", 0),
+                "modified": item.get("ModTime", ""),
+            }
+            for item in items
+            if item.get("Name", "").endswith(".tar.gz")
+        ]
+        return sorted(result, key=lambda x: x["modified"], reverse=True)
+    except Exception:
+        return []
+
+
+def download_file(remote_name: str, remote_path: str, local_path: str) -> tuple[bool, str]:
+    """Download a single remote file to local_path using rclone copyto."""
+    src = f"{remote_name}:{remote_path}"
+    rc, stdout, stderr = _rclone("copyto", src, local_path)
     if rc == 0:
         return True, stdout
     return False, stderr

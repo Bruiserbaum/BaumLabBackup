@@ -87,6 +87,42 @@ class BackupRun(Base):
     error = Column(Text, nullable=True)
 
 
+class Stack(Base):
+    __tablename__ = "stacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    repo_url = Column(String, nullable=False)
+    repo_branch = Column(String, nullable=False, default="main")
+    env_path = Column(String, nullable=False, default="")   # absolute host path to .env
+    compose_project = Column(String, nullable=False)         # docker compose project name
+    volumes = Column(Text, nullable=False, default="[]")     # JSON list of volume names
+    destination_id = Column(Integer, ForeignKey("destinations.id"), nullable=False)
+    schedule_cron = Column(String, nullable=True)            # optional; None = manual only
+    retention_days = Column(Integer, default=30, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_backup_at = Column(DateTime, nullable=True)
+    last_backup_status = Column(String, nullable=True)       # success / failed
+
+
+class StackRun(Base):
+    __tablename__ = "stack_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stack_id = Column(Integer, ForeignKey("stacks.id", ondelete="SET NULL"), nullable=True)
+    stack_name = Column(String, nullable=False)
+    run_type = Column(String, nullable=False)                # backup / restore
+    status = Column(String, nullable=False, default="running")  # running / success / failed
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    backup_path = Column(String, nullable=True)              # remote path (backup) or filename (restore)
+    restore_target = Column(String, nullable=True)           # clone target dir (restore only)
+    log_lines = Column(Text, nullable=False, default="[]")   # JSON list of strings
+    error = Column(Text, nullable=True)
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
@@ -105,6 +141,8 @@ def migrate_db() -> None:
     migrations = [
         "ALTER TABLE users ADD COLUMN oidc_sub TEXT UNIQUE",
         "CREATE INDEX IF NOT EXISTS ix_users_oidc_sub ON users (oidc_sub)",
+        # Stack tables added later — CREATE TABLE IF NOT EXISTS handles fresh installs;
+        # existing installs without these tables will create them via init_db on restart.
     ]
     with engine.connect() as conn:
         for stmt in migrations:
