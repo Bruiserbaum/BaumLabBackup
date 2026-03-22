@@ -6,6 +6,8 @@ import tarfile
 from datetime import datetime
 from typing import Optional
 
+import docker
+
 from database import BackupJob, BackupRun, Destination, SessionLocal
 from docker_ops import run_db_dump, start_container, stop_container
 from encryption import decrypt
@@ -13,6 +15,30 @@ from config import BACKUP_TMP_DIR
 from storage import delete_old_backups, upload
 
 logger = logging.getLogger(__name__)
+
+
+def _tar_named_volume(volume_name: str, vol_dir: str) -> tuple[bool, int]:
+    """
+    Archive a named Docker volume into vol_dir/{volume_name}.tar.gz using an
+    ephemeral Alpine container so the backup container never needs host
+    filesystem access.
+    """
+    try:
+        client = docker.from_env()
+        client.containers.run(
+            "alpine:latest",
+            f"tar czf /backup/{volume_name}.tar.gz -C /data .",
+            volumes={
+                volume_name: {"bind": "/data", "mode": "ro"},
+                vol_dir: {"bind": "/backup", "mode": "rw"},
+            },
+            remove=True,
+        )
+        size = os.path.getsize(os.path.join(vol_dir, f"{volume_name}.tar.gz"))
+        return True, size
+    except Exception as exc:
+        logger.error("_tar_named_volume %s failed: %s", volume_name, exc)
+        return False, 0
 
 
 def log_line(run_id: int, text: str, db) -> None:
@@ -60,41 +86,13 @@ def execute_backup_job(job_id: int) -> None:
         containers = json.loads(job.containers or "[]")
         volumes = json.loads(job.volumes or "[]")
 
-        # Stop containers if pre_stop is enabled
-        if job.pre_stop and containers:
-            log_line(run_id, f"Stopping {len(containers)} container(s)...", db)
-            for cname in containers:
-                if stop_container(cname):
-                    stopped_containers.append(cname)
-                    log_line(run_id, f"  Stopped: {cname}", db)
-                else:
-                    log_line(run_id, f"  Warning: could not stop {cname}", db)
-
         # Create temp directory
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         tmp_dir = os.path.join(BACKUP_TMP_DIR, f"{job.name}_{timestamp}")
         os.makedirs(tmp_dir, exist_ok=True)
         log_line(run_id, f"Using temp dir: {tmp_dir}", db)
 
-        # Copy volumes
-        if volumes:
-            vol_dir = os.path.join(tmp_dir, "volumes")
-            os.makedirs(vol_dir, exist_ok=True)
-            log_line(run_id, f"Copying {len(volumes)} volume(s)...", db)
-            for vol in volumes:
-                source = vol.get("source", "")
-                name = vol.get("name", os.path.basename(source))
-                dest = os.path.join(vol_dir, name)
-                if not source or not os.path.exists(source):
-                    log_line(run_id, f"  Warning: source not found: {source}", db)
-                    continue
-                if os.path.isdir(source):
-                    shutil.copytree(source, dest)
-                else:
-                    shutil.copy2(source, dest)
-                log_line(run_id, f"  Copied: {source} -> {dest}", db)
-
-        # Database dump
+        # ── Step 1: DB dump BEFORE stopping containers ────────────────────────
         if job.db_type and job.db_type.lower() not in ("none", ""):
             log_line(run_id, f"Running {job.db_type} dump for {job.db_name}...", db)
             db_password = ""
@@ -114,6 +112,45 @@ def execute_backup_job(job_id: int) -> None:
                 log_line(run_id, f"  DB dump written to {dump_path}", db)
             else:
                 log_line(run_id, "  Warning: DB dump failed", db)
+
+        # ── Step 2: Stop containers (after dump so DB is still up for dump) ──
+        if job.pre_stop and containers:
+            log_line(run_id, f"Stopping {len(containers)} container(s)...", db)
+            for cname in containers:
+                if stop_container(cname):
+                    stopped_containers.append(cname)
+                    log_line(run_id, f"  Stopped: {cname}", db)
+                else:
+                    log_line(run_id, f"  Warning: could not stop {cname}", db)
+
+        # ── Step 3: Archive volumes ───────────────────────────────────────────
+        if volumes:
+            vol_dir = os.path.join(tmp_dir, "volumes")
+            os.makedirs(vol_dir, exist_ok=True)
+            log_line(run_id, f"Archiving {len(volumes)} volume(s)...", db)
+            for vol in volumes:
+                source = vol.get("source", "")
+                name = vol.get("name", os.path.basename(source))
+                vol_type = vol.get("type", "")
+
+                if vol_type == "volume":
+                    # Named Docker volume — use Alpine container to tar it
+                    ok, size = _tar_named_volume(name, vol_dir)
+                    if ok:
+                        log_line(run_id, f"  Archived volume {name}: {size:,} bytes", db)
+                    else:
+                        log_line(run_id, f"  Warning: failed to archive volume {name}", db)
+                else:
+                    # Bind mount — try direct copy (only works if host path is mounted)
+                    dest = os.path.join(vol_dir, name)
+                    if not source or not os.path.exists(source):
+                        log_line(run_id, f"  Warning: bind mount not accessible: {source}", db)
+                        continue
+                    if os.path.isdir(source):
+                        shutil.copytree(source, dest)
+                    else:
+                        shutil.copy2(source, dest)
+                    log_line(run_id, f"  Copied: {source}", db)
 
         # Create tar.gz archive
         archive_path = os.path.join(BACKUP_TMP_DIR, f"{job.name}_{timestamp}.tar.gz")

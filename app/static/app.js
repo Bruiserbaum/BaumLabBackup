@@ -629,10 +629,12 @@ function updateJobVolumes(preselected) {
       <input type="checkbox" name="job_vol" value="${esc(v.name)}"
         data-vol-src="${esc(v.source)}"
         data-vol-name="${esc(v.name)}"
+        data-vol-type="${esc(v.type)}"
         ${currentlyChecked.has(v.name) ? 'checked' : 'checked'} />
       <span>
         <strong>${esc(v.name)}</strong>
-        <span class="text-secondary text-sm" style="display:block">${esc(v.destination)} ← ${esc(v.source || 'named volume')}</span>
+        <span class="badge ${v.type === 'volume' ? 'badge-info' : 'badge-secondary'}" style="margin-left:6px;font-size:0.65rem">${v.type === 'volume' ? 'named' : 'bind'}</span>
+        <span class="text-secondary text-sm" style="display:block">${esc(v.destination)}${v.type !== 'volume' ? ' ← ' + esc(v.source) : ''}</span>
       </span>
     </label>
   `).join('');
@@ -670,7 +672,7 @@ function _collectJobBody() {
     .map(c => c.value);
 
   const volumes = Array.from(document.querySelectorAll('input[name=job_vol]:checked'))
-    .map(cb => ({ source: cb.dataset.volSrc, name: cb.dataset.volName }));
+    .map(cb => ({ source: cb.dataset.volSrc, name: cb.dataset.volName, type: cb.dataset.volType }));
 
   const dbType = el('jm-dbtype').value;
   const destId = parseInt(el('jm-dest').value);
