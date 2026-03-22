@@ -13,6 +13,7 @@ from storage import (
     configure_sftp,
     configure_smb,
     remove_remote,
+    test_remote,
 )
 
 router = APIRouter()
@@ -123,6 +124,59 @@ def create_destination(
         "type": dest.type,
         "created_at": dest.created_at.isoformat(),
     }
+
+
+@router.put("/{dest_id}")
+def update_destination(
+    dest_id: int,
+    req: CreateDestinationRequest,
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    dest = db.query(Destination).filter(Destination.id == dest_id).first()
+    if not dest:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination not found")
+
+    # Merge: if a sensitive field is blank or still "***", keep the existing stored value
+    try:
+        existing_config = json.loads(decrypt(dest.config_encrypted))
+    except Exception:
+        existing_config = {}
+
+    merged = dict(req.config)
+    for field in SENSITIVE_FIELDS:
+        if field in merged and merged[field] in ("", "***"):
+            merged[field] = existing_config.get(field, "")
+
+    dest.name = req.name
+    dest.type = req.type
+    dest.config_encrypted = encrypt(json.dumps(merged))
+    db.commit()
+
+    remote_name = f"dest_{dest_id}"
+    try:
+        _configure_rclone(req.type, remote_name, merged)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reconfigure rclone remote: {exc}",
+        )
+
+    return {"id": dest.id, "name": dest.name, "type": dest.type, "created_at": dest.created_at.isoformat()}
+
+
+@router.post("/{dest_id}/test")
+def test_destination_connection(
+    dest_id: int,
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    dest = db.query(Destination).filter(Destination.id == dest_id).first()
+    if not dest:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination not found")
+
+    ok, message = test_remote(f"dest_{dest_id}")
+    return {"ok": ok, "message": message}
 
 
 @router.delete("/{dest_id}", status_code=status.HTTP_204_NO_CONTENT)

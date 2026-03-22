@@ -167,6 +167,20 @@ def delete_old_backups(remote_name: str, remote_path: str, retention_days: int) 
         logger.warning("delete_old_backups failed for %s: %s", dest, stderr)
 
 
+def test_remote(remote_name: str) -> tuple[bool, str]:
+    """Test connectivity by listing the remote root. Returns (ok, message)."""
+    rc, stdout, stderr = _rclone(
+        "lsd", f"{remote_name}:",
+        "--max-depth=1",
+        "--contimeout=10s",
+        "--timeout=20s",
+    )
+    if rc == 0:
+        return True, "Connection successful"
+    msg = (stderr.strip() or "Connection failed")[:400]
+    return False, msg
+
+
 def remove_remote(remote_name: str) -> None:
     if not os.path.exists(RCLONE_CONFIG_PATH):
         return

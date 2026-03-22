@@ -1177,7 +1177,10 @@ function renderDestinations(container, dests) {
       <td><span class="badge badge-warning">${esc(d.type.toUpperCase())}</span></td>
       <td class="text-sm text-secondary">${formatDate(d.created_at)}</td>
       <td>
+        <button class="btn btn-secondary btn-sm" onclick="testDestConnection(${d.id})">Test</button>
+        <button class="btn btn-secondary btn-sm" onclick='showEditDestModal(${d.id}, ${JSON.stringify(d.name)}, ${JSON.stringify(d.type)}, ${JSON.stringify(d.config)})'>Edit</button>
         <button class="btn btn-danger btn-sm" onclick="deleteDestination(${d.id}, '${esc(d.name)}')">Delete</button>
+        <span id="dest-test-${d.id}" class="text-sm" style="margin-left:6px"></span>
       </td>
     </tr>
   `).join('');
@@ -1320,6 +1323,140 @@ async function submitAddDest() {
     navigate('destinations');
   } catch (e) {
     el('dest-modal-error').innerHTML = `<div class="form-error">${esc(e.message)}</div>`;
+  }
+}
+
+function showEditDestModal(id, name, type, config) {
+  const modalHtml = `
+    <div class="modal-overlay" id="dest-modal-overlay">
+      <div class="modal">
+        <button class="modal-close" onclick="closeModal('dest-modal-overlay')">✕</button>
+        <div class="modal-title">Edit Destination</div>
+        <div id="dest-modal-error"></div>
+
+        <div class="form-group">
+          <label>Name</label>
+          <input class="form-control" id="em-name" value="${esc(name)}" placeholder="My NAS Backup" />
+        </div>
+
+        <div class="form-group">
+          <label>Type</label>
+          <select class="form-control" id="em-type" onchange="renderEditDestFields(el('em-type').value, {})">
+            <option value="b2"  ${type==='b2'   ? 'selected':''}>Backblaze B2</option>
+            <option value="smb" ${type==='smb'  ? 'selected':''}>SMB / NAS</option>
+            <option value="sftp"${type==='sftp' ? 'selected':''}>SFTP</option>
+            <option value="local"${type==='local'? 'selected':''}>Local Path</option>
+          </select>
+        </div>
+
+        <div id="em-fields"></div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal('dest-modal-overlay')">Cancel</button>
+          <button class="btn btn-primary" id="btn-save-dest" onclick="submitEditDest(${id})">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  `;
+  el('dest-modal-container').innerHTML = modalHtml;
+  renderEditDestFields(type, config);
+}
+
+function renderEditDestFields(type, config) {
+  const v = (key, fallback = '') => esc(config[key] != null ? config[key] : fallback);
+  const sensitive = '*** (unchanged)';
+  const isSensitive = val => val === '***';
+
+  const fields = {
+    b2: `
+      <div class="form-group"><label>Account ID</label><input class="form-control" id="em-b2-account" value="${v('account_id')}" /></div>
+      <div class="form-group"><label>Application Key</label><input class="form-control" id="em-b2-key" type="password" placeholder="${isSensitive(config.application_key) ? sensitive : ''}" /></div>
+      <div class="form-group"><label>Bucket Name</label><input class="form-control" id="em-b2-bucket" value="${v('bucket')}" /></div>
+      <div class="form-group"><label>Path (inside bucket)</label><input class="form-control" id="em-b2-path" value="${v('path')}" /></div>
+    `,
+    smb: `
+      <div class="form-group"><label>Host</label><input class="form-control" id="em-smb-host" value="${v('host')}" /></div>
+      <div class="form-group"><label>Share Name</label><input class="form-control" id="em-smb-share" value="${v('share')}" /></div>
+      <div class="form-group"><label>Username</label><input class="form-control" id="em-smb-user" value="${v('user')}" /></div>
+      <div class="form-group"><label>Password</label><input class="form-control" id="em-smb-pass" type="password" placeholder="${isSensitive(config.password) ? sensitive : ''}" /></div>
+      <div class="form-group"><label>Domain (optional)</label><input class="form-control" id="em-smb-domain" value="${v('domain')}" /></div>
+      <div class="form-group"><label>Path (inside share)</label><input class="form-control" id="em-smb-path" value="${v('path')}" /></div>
+    `,
+    sftp: `
+      <div class="form-group"><label>Host</label><input class="form-control" id="em-sftp-host" value="${v('host')}" /></div>
+      <div class="form-group"><label>Port</label><input class="form-control" id="em-sftp-port" type="number" value="${v('port', '22')}" /></div>
+      <div class="form-group"><label>Username</label><input class="form-control" id="em-sftp-user" value="${v('user')}" /></div>
+      <div class="form-group"><label>Password</label><input class="form-control" id="em-sftp-pass" type="password" placeholder="${isSensitive(config.password) ? sensitive : ''}" /></div>
+      <div class="form-group"><label>Path</label><input class="form-control" id="em-sftp-path" value="${v('path')}" /></div>
+    `,
+    local: `
+      <div class="form-group"><label>Local Path</label><input class="form-control" id="em-local-path" value="${v('path')}" /></div>
+    `,
+  };
+
+  el('em-fields').innerHTML = fields[type] || '';
+}
+
+async function submitEditDest(id) {
+  el('dest-modal-error').innerHTML = '';
+  try {
+    const name = el('em-name').value.trim();
+    if (!name) throw new Error('Name is required');
+    const type = el('em-type').value;
+
+    // Empty password fields mean "keep existing" — the backend handles "" as unchanged
+    let config = {};
+    if (type === 'b2') {
+      config = {
+        account_id: el('em-b2-account').value.trim(),
+        application_key: el('em-b2-key').value,
+        bucket: el('em-b2-bucket').value.trim(),
+        path: el('em-b2-path').value.trim(),
+      };
+    } else if (type === 'smb') {
+      config = {
+        host: el('em-smb-host').value.trim(),
+        share: el('em-smb-share').value.trim(),
+        user: el('em-smb-user').value.trim(),
+        password: el('em-smb-pass').value,
+        domain: el('em-smb-domain').value.trim(),
+        path: el('em-smb-path').value.trim(),
+      };
+    } else if (type === 'sftp') {
+      config = {
+        host: el('em-sftp-host').value.trim(),
+        port: parseInt(el('em-sftp-port').value) || 22,
+        user: el('em-sftp-user').value.trim(),
+        password: el('em-sftp-pass').value,
+        path: el('em-sftp-path').value.trim(),
+      };
+    } else if (type === 'local') {
+      config = { path: el('em-local-path').value.trim() };
+    }
+
+    el('btn-save-dest').disabled = true;
+    await api('PUT', `/destinations/${id}`, { name, type, config });
+    closeModal('dest-modal-overlay');
+    navigate('destinations');
+  } catch (e) {
+    el('btn-save-dest').disabled = false;
+    el('dest-modal-error').innerHTML = `<div class="form-error">${esc(e.message)}</div>`;
+  }
+}
+
+async function testDestConnection(id) {
+  const span = el(`dest-test-${id}`);
+  if (span) span.innerHTML = '<span style="color:var(--text-muted)">Testing…</span>';
+  try {
+    const res = await api('POST', `/destinations/${id}/test`);
+    if (!res) return;
+    if (span) {
+      span.innerHTML = res.ok
+        ? '<span style="color:#4ade80">✓ Connected</span>'
+        : `<span style="color:var(--danger)" title="${esc(res.message)}">✗ Failed</span>`;
+    }
+  } catch (e) {
+    if (span) span.innerHTML = `<span style="color:var(--danger)" title="${esc(e.message)}">✗ Error</span>`;
   }
 }
 
