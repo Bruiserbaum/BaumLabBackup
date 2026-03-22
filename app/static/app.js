@@ -117,18 +117,35 @@ function navigate(page) {
 }
 
 // ---- Routing ----
+function _showLoginPage(app) {
+  fetch('/api/auth/config')
+    .then(r => r.json())
+    .then(d => { state.oidcEnabled = !!d.oidc_enabled; })
+    .catch(() => {})
+    .finally(() => {
+      app.innerHTML = renderLoginPage();
+      bindLoginPage();
+    });
+}
+
 function renderApp() {
   const app = el('app');
   if (!state.token) {
-    // Fetch OIDC config once, then render login page
-    fetch('/api/auth/config')
-      .then(r => r.json())
-      .then(d => { state.oidcEnabled = !!d.oidc_enabled; })
-      .catch(() => {})
-      .finally(() => {
-        app.innerHTML = renderLoginPage();
-        bindLoginPage();
-      });
+    // Try Authentik header auth first (silent — 404/401 means not configured or no header present)
+    fetch('/api/auth/header-login')
+      .then(async r => {
+        if (r.ok) {
+          const data = await r.json().catch(() => null);
+          if (data && data.access_token) {
+            state.token = data.access_token;
+            localStorage.setItem('blb_token', data.access_token);
+            renderApp();
+            return;
+          }
+        }
+        _showLoginPage(app);
+      })
+      .catch(() => _showLoginPage(app));
     return;
   }
   app.innerHTML = renderShell();

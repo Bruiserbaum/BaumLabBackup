@@ -4,7 +4,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from jose import jwt as jose_jwt, JWTError
 from pydantic import BaseModel
@@ -20,6 +20,7 @@ from auth import (
 )
 from config import (
     SECRET_KEY, ALGORITHM,
+    AUTHENTIK_HEADER_AUTH,
     OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URI,
 )
 from database import User, get_db
@@ -144,7 +145,27 @@ def totp_disable(
 @router.get("/config")
 def auth_config():
     """Public endpoint — returns which auth methods are available."""
-    return {"oidc_enabled": OIDC_ENABLED}
+    return {"oidc_enabled": OIDC_ENABLED, "header_auth_enabled": AUTHENTIK_HEADER_AUTH}
+
+
+@router.get("/header-login")
+def header_login(request: Request, db=Depends(get_db)):
+    """Called by the frontend on page load when Authentik forward auth is active.
+    Reads X-authentik-username injected by NPM and issues a local JWT, creating a
+    user account on first visit. Requires AUTHENTIK_HEADER_AUTH=true."""
+    if not AUTHENTIK_HEADER_AUTH:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Header auth is not enabled")
+    username = request.headers.get("X-authentik-username", "").strip()
+    if not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No Authentik header present")
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        user = User(username=username, password_hash="", is_admin=False)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    token = create_access_token({"sub": user.username})
+    return {"access_token": token}
 
 
 @router.get("/oidc/login")

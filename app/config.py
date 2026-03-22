@@ -10,7 +10,11 @@ BACKUP_TMP_DIR = "/tmp/baumlabbackup"
 RCLONE_CONFIG_PATH = "/data/rclone.conf"
 TZ = os.getenv("TZ", "America/New_York")
 
-# ── Authentik SSO (OIDC) ───────────────────────────────────────────────────────
+# ── Authentik SSO ─────────────────────────────────────────────────────────────
+# Forward auth — set true when NPM injects X-authentik-username (see BaumDocker/authentik/README)
+AUTHENTIK_HEADER_AUTH = os.getenv("AUTHENTIK_HEADER_AUTH", "false").strip().lower() == "true"
+
+# OIDC
 OIDC_ENABLED       = os.getenv("OIDC_ENABLED", "false").strip().lower() == "true"
 OIDC_ISSUER        = os.getenv("OIDC_ISSUER", "").rstrip("/") + "/"
 OIDC_CLIENT_ID     = os.getenv("OIDC_CLIENT_ID", "").strip()
