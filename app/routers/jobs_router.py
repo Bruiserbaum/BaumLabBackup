@@ -248,9 +248,13 @@ def list_job_backups(
     remote_path = dest_config.get("path", "").rstrip("/")
 
     backups = list_backups(remote_name, remote_path)
-    # Filter to only archives that belong to this job
+    # Normalize spaces→underscores on both sides so "Authentik Full Backup_..."
+    # matches whether the filename was saved with spaces or underscores.
     safe_name = job.name.replace(" ", "_")
-    job_backups = [b for b in backups if b["name"].startswith(safe_name + "_")]
+    job_backups = [
+        b for b in backups
+        if b["name"].replace(" ", "_").startswith(safe_name + "_")
+    ]
 
     return {
         "job_id": job_id,
