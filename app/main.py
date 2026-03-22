@@ -44,6 +44,25 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # Re-apply rclone configs for all destinations (ensures /data/rclone.conf is
+    # always in sync with the database, even after a fresh container deploy)
+    db = next(get_db())
+    try:
+        import json
+        from database import Destination
+        from encryption import decrypt
+        from routers.destinations_router import _configure_rclone
+        destinations = db.query(Destination).all()
+        for dest in destinations:
+            try:
+                config = json.loads(decrypt(dest.config_encrypted))
+                _configure_rclone(dest.type, f"dest_{dest.id}", config)
+            except Exception as exc:
+                logger.error("Failed to re-apply rclone config for dest %d: %s", dest.id, exc)
+        logger.info("Re-applied rclone config for %d destination(s)", len(destinations))
+    finally:
+        db.close()
+
     # Init scheduler
     from scheduler import add_backup_job, add_stack_job, init_scheduler
     init_scheduler()
