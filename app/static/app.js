@@ -418,6 +418,7 @@ function renderJobs(container, jobs, destinations) {
         <td>
           <div class="row-actions">
             <button class="btn btn-secondary btn-sm" onclick="runJobNow(${job.id}, '${esc(job.name)}')">Run Now</button>
+            <button class="btn btn-secondary btn-sm" onclick="showJobBackupsModal(${job.id})">Backups</button>
             <button class="btn btn-secondary btn-sm" onclick="showEditJobModal(${job.id})">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteJob(${job.id}, '${esc(job.name)}')">Delete</button>
           </div>
@@ -471,6 +472,136 @@ async function deleteJob(jobId, name) {
     navigate('jobs');
   } catch (e) {
     alert('Failed: ' + e.message);
+  }
+}
+
+async function showJobBackupsModal(jobId) {
+  const mc = el('main-content');
+  const container = mc.querySelector('#job-modal-container') || mc;
+  container.innerHTML = `
+    <div class="modal-overlay" id="job-backups-overlay">
+      <div class="modal" style="max-width:700px">
+        <button class="modal-close" onclick="closeModal('job-backups-overlay')">✕</button>
+        <div class="modal-title">Backups</div>
+        <p class="text-secondary text-sm">Loading...</p>
+      </div>
+    </div>`;
+
+  try {
+    const data = await api('GET', `/jobs/${jobId}/backups`);
+    if (!data) return;
+
+    const backups = data.backups || [];
+    const rows = backups.length === 0
+      ? `<tr><td colspan="3" class="text-secondary" style="text-align:center;padding:24px">No backups found for this job.</td></tr>`
+      : backups.map(b => `
+          <tr>
+            <td class="text-sm text-mono">${esc(b.name)}</td>
+            <td class="text-sm">${formatDate(b.modified)}</td>
+            <td class="text-sm">${formatBytes(b.size)}</td>
+            <td>
+              <button class="btn btn-primary btn-sm"
+                onclick="showJobRestoreModal(${jobId}, '${esc(b.name)}', ${b.size}, '${esc(b.modified)}',
+                  ${JSON.stringify(JSON.stringify(data.containers))})">
+                Restore
+              </button>
+            </td>
+          </tr>`).join('');
+
+    const mc2 = el('main-content');
+    const c2 = mc2.querySelector('#job-modal-container') || mc2;
+    c2.innerHTML = `
+      <div class="modal-overlay" id="job-backups-overlay">
+        <div class="modal" style="max-width:700px">
+          <button class="modal-close" onclick="closeModal('job-backups-overlay')">✕</button>
+          <div class="modal-title">Backups — ${esc(data.job_name)}</div>
+          <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+            <table>
+              <thead><tr><th>File</th><th>Date</th><th>Size</th><th></th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('job-backups-overlay')">Close</button>
+          </div>
+        </div>
+      </div>`;
+  } catch (e) {
+    alert('Failed to load backups: ' + e.message);
+    closeModal('job-backups-overlay');
+  }
+}
+
+function showJobRestoreModal(jobId, filename, size, modified, containersJson) {
+  const allContainers = JSON.parse(containersJson || '[]');
+
+  const containerChecks = allContainers.map(c => `
+    <label class="form-check">
+      <input type="checkbox" name="restore_container" value="${esc(c)}" checked />
+      ${esc(c)}
+    </label>`).join('');
+
+  const mc = el('main-content');
+  const container = mc.querySelector('#job-modal-container') || mc;
+  container.innerHTML = `
+    <div class="modal-overlay" id="job-restore-overlay">
+      <div class="modal" style="max-width:560px">
+        <button class="modal-close" onclick="closeModal('job-restore-overlay')">✕</button>
+        <div class="modal-title">Restore Backup</div>
+        <div id="job-restore-error"></div>
+
+        <div class="form-section">
+          <div class="form-section-title">Archive</div>
+          <p class="text-sm text-mono" style="word-break:break-all">${esc(filename)}</p>
+          <p class="text-secondary text-sm">${formatDate(modified)} &nbsp;·&nbsp; ${formatBytes(size)}</p>
+        </div>
+
+        <div class="form-section">
+          <div class="form-section-title">What to restore</div>
+          <label class="form-check">
+            <input type="checkbox" id="restore-volumes" checked />
+            Restore Docker volumes from archive
+          </label>
+          <label class="form-check mt-2">
+            <input type="checkbox" id="restore-db" checked />
+            Restore database dump (if present in archive)
+          </label>
+        </div>
+
+        <div class="form-section">
+          <div class="form-section-title">Start containers after restore</div>
+          ${containerChecks || '<span class="text-secondary text-sm">No containers configured for this job.</span>'}
+        </div>
+
+        <div class="form-error mb-2" style="display:block">
+          ⚠ This will overwrite existing volume data. Make sure you want to restore from this backup.
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal('job-restore-overlay')">Cancel</button>
+          <button class="btn btn-danger" onclick="submitJobRestore(${jobId}, '${esc(filename)}')">Start Restore</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function submitJobRestore(jobId, filename) {
+  el('job-restore-error').innerHTML = '';
+  try {
+    const containers = Array.from(document.querySelectorAll('input[name=restore_container]:checked'))
+      .map(cb => cb.value);
+
+    await api('POST', `/jobs/${jobId}/restore`, {
+      backup_filename: filename,
+      containers_to_start: containers,
+      restore_volumes: el('restore-volumes').checked,
+      restore_db: el('restore-db').checked,
+    });
+
+    closeModal('job-restore-overlay');
+    alert('Restore triggered! Check History for progress.');
+  } catch (e) {
+    el('job-restore-error').innerHTML = `<div class="form-error">${esc(e.message)}</div>`;
   }
 }
 

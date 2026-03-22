@@ -147,6 +147,27 @@ def trigger_stack_now(stack_id: int) -> None:
     logger.info("Triggered manual stack backup for stack %d", stack_id)
 
 
+def trigger_job_restore(
+    job_id: int,
+    backup_filename: str,
+    containers_to_start: list[str],
+    restore_volumes: bool,
+    restore_db: bool,
+) -> None:
+    from restore_job import execute_job_restore
+
+    scheduler = get_scheduler()
+    ts = int(datetime.utcnow().timestamp())
+    scheduler.add_job(
+        execute_job_restore,
+        id=f"job_restore_{job_id}_{ts}",
+        name=f"job_restore_{job_id}",
+        args=[job_id, backup_filename, containers_to_start, restore_volumes, restore_db],
+        replace_existing=True,
+    )
+    logger.info("Triggered restore for job %d from %s", job_id, backup_filename)
+
+
 def trigger_stack_restore(
     stack_id: int,
     backup_filename: str,

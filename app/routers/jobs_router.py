@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from auth import get_current_user
-from database import BackupJob, get_db
+from database import BackupJob, Destination, get_db
 from docker_ops import list_containers, list_volumes
-from encryption import encrypt
-from scheduler import add_backup_job, get_next_run_time, remove_backup_job, trigger_now
+from encryption import decrypt, encrypt
+from scheduler import add_backup_job, get_next_run_time, remove_backup_job, trigger_now, trigger_job_restore
+from storage import list_backups
 
 router = APIRouter()
 
@@ -16,6 +17,13 @@ router = APIRouter()
 class VolumeEntry(BaseModel):
     source: str
     name: str
+
+
+class RestoreJobRequest(BaseModel):
+    backup_filename: str
+    containers_to_start: list[str] = []
+    restore_volumes: bool = True
+    restore_db: bool = True
 
 
 class CreateJobRequest(BaseModel):
@@ -219,3 +227,56 @@ def toggle_job(
         remove_backup_job(job_id)
 
     return {"id": job.id, "enabled": job.enabled}
+
+
+@router.get("/{job_id}/backups")
+def list_job_backups(
+    job_id: int,
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    job = db.query(BackupJob).filter(BackupJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    dest_record = db.query(Destination).filter(Destination.id == job.destination_id).first()
+    if not dest_record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination not found")
+
+    dest_config = json.loads(decrypt(dest_record.config_encrypted))
+    remote_name = f"dest_{dest_record.id}"
+    remote_path = dest_config.get("path", "").rstrip("/")
+
+    backups = list_backups(remote_name, remote_path)
+    # Filter to only archives that belong to this job
+    safe_name = job.name.replace(" ", "_")
+    job_backups = [b for b in backups if b["name"].startswith(safe_name + "_")]
+
+    return {
+        "job_id": job_id,
+        "job_name": job.name,
+        "containers": json.loads(job.containers or "[]"),
+        "remote_path": remote_path,
+        "backups": job_backups,
+    }
+
+
+@router.post("/{job_id}/restore", status_code=status.HTTP_202_ACCEPTED)
+def restore_job(
+    job_id: int,
+    req: RestoreJobRequest,
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    job = db.query(BackupJob).filter(BackupJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    trigger_job_restore(
+        job_id=job_id,
+        backup_filename=req.backup_filename,
+        containers_to_start=req.containers_to_start,
+        restore_volumes=req.restore_volumes,
+        restore_db=req.restore_db,
+    )
+    return {"message": f"Restore triggered for job: {job.name}"}

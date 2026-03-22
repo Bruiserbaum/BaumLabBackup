@@ -161,6 +161,57 @@ def detect_compose_stacks() -> list[dict[str, Any]]:
         return []
 
 
+def run_db_restore(
+    container_name: str,
+    db_type: str,
+    db_name: str,
+    db_user: str,
+    db_password: str,
+    sql_path: str,
+) -> bool:
+    """Pipe a SQL dump file into the target container to restore the database."""
+    try:
+        if db_type == "mysql":
+            cmd = [
+                "docker", "exec", "-i", container_name,
+                "mysql", f"-u{db_user}", f"-p{db_password}", db_name,
+            ]
+            env = None
+        elif db_type == "postgres":
+            cmd = [
+                "docker", "exec", "-i",
+                "-e", f"PGPASSWORD={db_password}",
+                container_name,
+                "psql", "-U", db_user, "-d", db_name,
+            ]
+            env = None
+        else:
+            logger.error("run_db_restore: unsupported db_type=%s", db_type)
+            return False
+
+        with open(sql_path, "rb") as sql_file:
+            result = subprocess.run(
+                cmd,
+                stdin=sql_file,
+                capture_output=True,
+                timeout=600,
+                env=env,
+            )
+
+        if result.returncode != 0:
+            logger.error(
+                "run_db_restore exited %d for %s/%s: %s",
+                result.returncode, db_type, db_name,
+                result.stderr.decode(errors="replace")[:500],
+            )
+            return False
+        return True
+
+    except Exception as exc:
+        logger.error("run_db_restore failed: %s", exc)
+        return False
+
+
 def run_db_dump(
     container_name: str,
     db_type: str,

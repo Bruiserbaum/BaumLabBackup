@@ -17,7 +17,7 @@ def _job_run_dict(run: BackupRun) -> dict:
         "id": run.id,
         "kind": "job",
         "name": run.job_name,
-        "run_type": "backup",
+        "run_type": getattr(run, "run_type", "backup"),
         "status": run.status,
         "started_at": run.started_at.isoformat(),
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,

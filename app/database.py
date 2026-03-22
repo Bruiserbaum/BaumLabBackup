@@ -78,7 +78,8 @@ class BackupRun(Base):
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, ForeignKey("backup_jobs.id", ondelete="SET NULL"), nullable=True)
     job_name = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="running")  # running / success / failed
+    run_type = Column(String, nullable=False, default="backup")  # backup / restore
+    status = Column(String, nullable=False, default="running")   # running / success / failed
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
     size_bytes = Column(Integer, nullable=True)
@@ -144,6 +145,7 @@ def migrate_db() -> None:
         "CREATE INDEX IF NOT EXISTS ix_users_oidc_sub ON users (oidc_sub)",
         # backup_runs — columns added after initial release
         "ALTER TABLE backup_runs ADD COLUMN error TEXT",
+        "ALTER TABLE backup_runs ADD COLUMN run_type TEXT NOT NULL DEFAULT 'backup'",
         # stack_runs — columns added after initial release
         "ALTER TABLE stack_runs ADD COLUMN backup_path TEXT",
         "ALTER TABLE stack_runs ADD COLUMN restore_target TEXT",
