@@ -3,6 +3,7 @@ version: "3.9"
 services:
   baumlabbackup:
     build: ./app
+    container_name: baumlabbackup
     ports:
       - "${WEB_PORT:-8765}:8000"
     volumes:
