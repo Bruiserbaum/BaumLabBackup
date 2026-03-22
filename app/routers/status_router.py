@@ -1,45 +1,64 @@
 import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from auth import get_current_user
-from database import BackupJob, BackupRun, get_db
+from database import BackupJob, BackupRun, StackRun, get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _job_run_dict(run: BackupRun) -> dict:
+    return {
+        "id": run.id,
+        "kind": "job",
+        "name": run.job_name,
+        "run_type": "backup",
+        "status": run.status,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "size_bytes": run.size_bytes,
+        "error": run.error,
+    }
+
+
+def _stack_run_dict(run: StackRun) -> dict:
+    return {
+        "id": run.id,
+        "kind": "stack",
+        "name": run.stack_name,
+        "run_type": run.run_type,
+        "status": run.status,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "size_bytes": run.size_bytes,
+        "error": run.error,
+    }
 
 
 @router.get("")
 def dashboard_summary(current_user=Depends(get_current_user), db=Depends(get_db)):
     total_jobs = db.query(BackupJob).count()
     enabled_jobs = db.query(BackupJob).filter(BackupJob.enabled == True).count()
-    total_runs = db.query(BackupRun).count()
-    successful_runs = db.query(BackupRun).filter(BackupRun.status == "success").count()
-    failed_runs = db.query(BackupRun).filter(BackupRun.status == "failed").count()
-    running_runs = db.query(BackupRun).filter(BackupRun.status == "running").count()
 
-    recent_runs_q = (
-        db.query(BackupRun)
-        .order_by(BackupRun.started_at.desc())
-        .limit(10)
-        .all()
-    )
+    job_runs = db.query(BackupRun).all()
+    try:
+        stack_runs = db.query(StackRun).all()
+    except Exception as exc:
+        logger.warning("Could not query stack_runs (schema may need migration): %s", exc)
+        stack_runs = []
+    all_runs = [_job_run_dict(r) for r in job_runs] + [_stack_run_dict(r) for r in stack_runs]
 
-    recent_runs = []
-    for run in recent_runs_q:
-        recent_runs.append(
-            {
-                "id": run.id,
-                "job_id": run.job_id,
-                "job_name": run.job_name,
-                "status": run.status,
-                "started_at": run.started_at.isoformat(),
-                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                "size_bytes": run.size_bytes,
-                "destination_path": run.destination_path,
-                "error": run.error,
-            }
-        )
+    total_runs = len(all_runs)
+    successful_runs = sum(1 for r in all_runs if r["status"] == "success")
+    failed_runs = sum(1 for r in all_runs if r["status"] == "failed")
+    running_runs = sum(1 for r in all_runs if r["status"] == "running")
+
+    recent_runs = sorted(all_runs, key=lambda r: r["started_at"], reverse=True)[:10]
 
     return {
         "total_jobs": total_jobs,
@@ -56,41 +75,43 @@ def dashboard_summary(current_user=Depends(get_current_user), db=Depends(get_db)
 def list_runs(
     current_user=Depends(get_current_user),
     db=Depends(get_db),
-    job_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    q = db.query(BackupRun)
-    if job_id is not None:
-        q = q.filter(BackupRun.job_id == job_id)
+    job_q = db.query(BackupRun)
+    stack_q = db.query(StackRun)
     if status is not None:
-        q = q.filter(BackupRun.status == status)
+        job_q = job_q.filter(BackupRun.status == status)
+        stack_q = stack_q.filter(StackRun.status == status)
 
-    total = q.count()
-    runs = q.order_by(BackupRun.started_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    try:
+        stack_items = [_stack_run_dict(r) for r in stack_q.all()]
+    except Exception as exc:
+        logger.warning("Could not query stack_runs: %s", exc)
+        stack_items = []
+    all_items = [_job_run_dict(r) for r in job_q.all()] + stack_items
+    all_items.sort(key=lambda r: r["started_at"], reverse=True)
 
-    items = []
-    for run in runs:
-        items.append(
-            {
-                "id": run.id,
-                "job_id": run.job_id,
-                "job_name": run.job_name,
-                "status": run.status,
-                "started_at": run.started_at.isoformat(),
-                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                "size_bytes": run.size_bytes,
-                "destination_path": run.destination_path,
-                "error": run.error,
-            }
-        )
+    total = len(all_items)
+    offset = (page - 1) * page_size
+    items = all_items[offset: offset + page_size]
 
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/runs/stack/{run_id}")
+def get_stack_run(
+    run_id: int,
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    run = db.query(StackRun).filter(StackRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Stack run not found")
     return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": items,
+        **_stack_run_dict(run),
+        "log_lines": json.loads(run.log_lines or "[]"),
     }
 
 
@@ -104,17 +125,8 @@ def get_run(
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
-    log_lines = json.loads(run.log_lines or "[]")
-
     return {
-        "id": run.id,
-        "job_id": run.job_id,
-        "job_name": run.job_name,
-        "status": run.status,
-        "started_at": run.started_at.isoformat(),
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        "size_bytes": run.size_bytes,
+        **_job_run_dict(run),
+        "log_lines": json.loads(run.log_lines or "[]"),
         "destination_path": run.destination_path,
-        "log_lines": log_lines,
-        "error": run.error,
     }

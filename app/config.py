@@ -1,5 +1,7 @@
 import os
 
+APP_VERSION = "1.2.0"  # bump this on every release
+
 SECRET_KEY = os.getenv("SECRET_KEY", "changeme-please-set-a-real-secret-key").strip()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin").strip()
 ADMIN_RESET = os.getenv("ADMIN_RESET", "false").strip().lower() == "true"

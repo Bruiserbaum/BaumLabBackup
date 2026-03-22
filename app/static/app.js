@@ -163,12 +163,20 @@ function renderApp() {
       if (userEl) userEl.textContent = user.username;
     }
   });
+
+  // Load version
+  api('GET', '/auth/version').then(data => {
+    if (data && data.version) {
+      const vEl = el('navbar-version');
+      if (vEl) vEl.textContent = `v${data.version}`;
+    }
+  });
 }
 
 function renderShell() {
   return `
     <nav class="navbar">
-      <span class="navbar-logo">◈ BaumLabBackup</span>
+      <span class="navbar-logo">◈ BaumLabBackup <span id="navbar-version" style="font-size:0.65rem;opacity:0.5;font-weight:normal;margin-left:4px"></span></span>
       <div class="navbar-links">
         <button class="nav-link ${state.page === 'dashboard' ? 'active' : ''}" data-page="dashboard">Dashboard</button>
         <button class="nav-link ${state.page === 'jobs' ? 'active' : ''}" data-page="jobs">Jobs</button>
@@ -326,7 +334,8 @@ function renderDashboard(container, data) {
 
   const recentRows = (data.recent_runs || []).map(run => `
     <tr>
-      <td>${esc(run.job_name)}</td>
+      <td><span class="badge ${run.kind === 'stack' ? 'badge-info' : 'badge-secondary'}">${run.kind === 'stack' ? 'Stack' : 'Job'}</span></td>
+      <td>${esc(run.name)}</td>
       <td>${statusBadge(run.status)}</td>
       <td>${formatDate(run.started_at)}</td>
       <td>${formatDuration(run.started_at, run.completed_at)}</td>
@@ -359,10 +368,10 @@ function renderDashboard(container, data) {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Job</th><th>Status</th><th>Started</th><th>Duration</th><th>Size</th>
+          <th>Kind</th><th>Name</th><th>Status</th><th>Started</th><th>Duration</th><th>Size</th>
         </tr></thead>
         <tbody>
-          ${recentRows || '<tr><td colspan="5" class="text-secondary" style="text-align:center;padding:24px">No runs yet</td></tr>'}
+          ${recentRows || '<tr><td colspan="6" class="text-secondary" style="text-align:center;padding:24px">No runs yet</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -409,6 +418,7 @@ function renderJobs(container, jobs, destinations) {
         <td>
           <div class="row-actions">
             <button class="btn btn-secondary btn-sm" onclick="runJobNow(${job.id}, '${esc(job.name)}')">Run Now</button>
+            <button class="btn btn-secondary btn-sm" onclick="showEditJobModal(${job.id})">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteJob(${job.id}, '${esc(job.name)}')">Delete</button>
           </div>
         </td>
@@ -464,34 +474,40 @@ async function deleteJob(jobId, name) {
   }
 }
 
-async function showAddJobModal() {
-  const [containers, volumes, destinations] = await Promise.all([
-    api('GET', '/jobs/containers'),
-    api('GET', '/jobs/volumes'),
-    api('GET', '/destinations'),
-  ]);
+// Holds container data for the currently open job modal
+let _jobContainers = [];
 
-  const containerChecks = (containers || []).map(c => `
+function _buildJobModal(containers, destinations, job) {
+  _jobContainers = containers || [];
+  const isEdit = !!job;
+  const selectedContainers = new Set(isEdit ? (job.containers || []) : []);
+  const savedVolNames = new Set(isEdit ? (job.volumes || []).map(v => v.name) : []);
+
+  const containerChecks = _jobContainers.map(c => `
     <label class="form-check">
-      <input type="checkbox" name="job_containers" value="${esc(c.name)}" />
+      <input type="checkbox" name="job_containers" value="${esc(c.name)}"
+        onchange="updateJobVolumes()"
+        ${selectedContainers.has(c.name) ? 'checked' : ''} />
       ${esc(c.name)} <span class="text-secondary text-sm">(${esc(c.status)})</span>
     </label>
   `).join('');
 
   const destOptions = (destinations || []).map(d =>
-    `<option value="${d.id}">${esc(d.name)} (${d.type})</option>`
+    `<option value="${d.id}" ${isEdit && job.destination_id === d.id ? 'selected' : ''}>${esc(d.name)} (${d.type})</option>`
   ).join('');
+
+  const dbType = isEdit ? (job.db_type || '') : '';
 
   const modalHtml = `
     <div class="modal-overlay" id="job-modal-overlay">
-      <div class="modal">
+      <div class="modal" data-job-id="${isEdit ? job.id : ''}">
         <button class="modal-close" onclick="closeModal('job-modal-overlay')">✕</button>
-        <div class="modal-title">Add Backup Job</div>
+        <div class="modal-title">${isEdit ? 'Edit Backup Job' : 'Add Backup Job'}</div>
         <div id="job-modal-error"></div>
 
         <div class="form-group">
           <label>Job Name</label>
-          <input class="form-control" id="jm-name" placeholder="my-backup" />
+          <input class="form-control" id="jm-name" placeholder="my-backup" value="${isEdit ? esc(job.name) : ''}" />
         </div>
 
         <div class="form-section">
@@ -500,21 +516,16 @@ async function showAddJobModal() {
             ${containerChecks || '<span class="text-secondary text-sm">No containers found</span>'}
           </div>
           <div class="form-check mt-2">
-            <input type="checkbox" id="jm-prestop" />
+            <input type="checkbox" id="jm-prestop" ${isEdit && job.pre_stop ? 'checked' : ''} />
             <label for="jm-prestop">Stop containers before backup (pre-stop)</label>
           </div>
         </div>
 
         <div class="form-section">
-          <div class="form-section-title">Volumes / Paths</div>
-          <div class="volume-rows" id="jm-vol-rows">
-            <div class="volume-row">
-              <input class="form-control" placeholder="Source path (e.g. /var/lib/docker/volumes/myapp/_data)" data-vol-src />
-              <input class="form-control" placeholder="Archive name" data-vol-name style="max-width:160px" />
-              <button class="btn btn-danger btn-sm" onclick="removeVolumeRow(this)">✕</button>
-            </div>
+          <div class="form-section-title">Volumes</div>
+          <div id="jm-vol-rows">
+            <span class="text-secondary text-sm">Select containers above to see their volumes.</span>
           </div>
-          <button class="btn btn-secondary btn-sm mt-2" onclick="addVolumeRow()">+ Add Path</button>
         </div>
 
         <div class="form-section">
@@ -523,26 +534,26 @@ async function showAddJobModal() {
             <label>DB Type</label>
             <select class="form-control" id="jm-dbtype" onchange="updateDbFields()">
               <option value="">None</option>
-              <option value="mysql">MySQL / MariaDB</option>
-              <option value="postgres">PostgreSQL</option>
+              <option value="mysql" ${dbType === 'mysql' ? 'selected' : ''}>MySQL / MariaDB</option>
+              <option value="postgres" ${dbType === 'postgres' ? 'selected' : ''}>PostgreSQL</option>
             </select>
           </div>
-          <div id="jm-db-fields" style="display:none">
+          <div id="jm-db-fields" style="display:${dbType ? 'block' : 'none'}">
             <div class="form-group">
               <label>DB Container Name</label>
-              <input class="form-control" id="jm-db-container" placeholder="mysql-container" />
+              <input class="form-control" id="jm-db-container" placeholder="mysql-container" value="${isEdit ? esc(job.db_container || '') : ''}" />
             </div>
             <div class="form-group">
               <label>Database Name</label>
-              <input class="form-control" id="jm-db-name" placeholder="mydb" />
+              <input class="form-control" id="jm-db-name" placeholder="mydb" value="${isEdit ? esc(job.db_name || '') : ''}" />
             </div>
             <div class="form-group">
               <label>DB User</label>
-              <input class="form-control" id="jm-db-user" placeholder="root" />
+              <input class="form-control" id="jm-db-user" placeholder="root" value="${isEdit ? esc(job.db_user || '') : ''}" />
             </div>
             <div class="form-group">
               <label>DB Password</label>
-              <input class="form-control" id="jm-db-pass" type="password" />
+              <input class="form-control" id="jm-db-pass" type="password" placeholder="${isEdit && job.db_type ? '*** (unchanged)' : ''}" />
             </div>
           </div>
         </div>
@@ -557,29 +568,93 @@ async function showAddJobModal() {
 
         <div class="form-group">
           <label>Schedule (cron)</label>
-          <input class="form-control" id="jm-cron" placeholder="0 2 * * *" value="0 2 * * *" />
+          <input class="form-control" id="jm-cron" placeholder="0 2 * * *" value="${isEdit ? esc(job.schedule_cron) : '0 2 * * *'}" />
           <div class="form-hint">5-field cron. Examples: <code>0 2 * * *</code> = daily at 2am &nbsp;|&nbsp; <code>0 */6 * * *</code> = every 6h</div>
         </div>
 
         <div class="form-group">
           <label>Retention (days, 0 = keep forever)</label>
-          <input class="form-control" id="jm-retention" type="number" value="30" min="0" />
+          <input class="form-control" id="jm-retention" type="number" value="${isEdit ? job.retention_days : 30}" min="0" />
         </div>
 
         <div class="form-check">
-          <input type="checkbox" id="jm-enabled" checked />
+          <input type="checkbox" id="jm-enabled" ${!isEdit || job.enabled ? 'checked' : ''} />
           <label for="jm-enabled">Enabled</label>
         </div>
 
         <div class="modal-footer">
           <button class="btn btn-secondary" onclick="closeModal('job-modal-overlay')">Cancel</button>
-          <button class="btn btn-primary" onclick="submitAddJob()">Create Job</button>
+          <button class="btn btn-primary" onclick="submitJob()">${isEdit ? 'Save Changes' : 'Create Job'}</button>
         </div>
       </div>
     </div>
   `;
 
   el('job-modal-container').innerHTML = modalHtml;
+  // Initialize volume checkboxes based on currently selected containers
+  updateJobVolumes(savedVolNames);
+}
+
+function updateJobVolumes(preselected) {
+  // preselected: Set of volume names to check (used when opening edit modal)
+  const volRows = el('jm-vol-rows');
+  if (!volRows) return;
+
+  // Gather currently checked volume names to preserve state across re-renders
+  const currentlyChecked = preselected instanceof Set
+    ? preselected
+    : new Set(Array.from(volRows.querySelectorAll('input[name=job_vol]:checked')).map(cb => cb.value));
+
+  const selectedContainers = Array.from(document.querySelectorAll('input[name=job_containers]:checked'))
+    .map(cb => cb.value);
+
+  // Collect unique volumes from selected containers (by name)
+  const volMap = new Map();
+  for (const cName of selectedContainers) {
+    const c = _jobContainers.find(x => x.name === cName);
+    if (c) {
+      for (const v of (c.volumes || [])) {
+        if (!volMap.has(v.name)) volMap.set(v.name, v);
+      }
+    }
+  }
+
+  if (volMap.size === 0) {
+    volRows.innerHTML = '<span class="text-secondary text-sm">Select containers above to see their volumes.</span>';
+    return;
+  }
+
+  volRows.innerHTML = [...volMap.values()].map(v => `
+    <label class="form-check" style="align-items:flex-start">
+      <input type="checkbox" name="job_vol" value="${esc(v.name)}"
+        data-vol-src="${esc(v.source)}"
+        data-vol-name="${esc(v.name)}"
+        ${currentlyChecked.has(v.name) ? 'checked' : 'checked'} />
+      <span>
+        <strong>${esc(v.name)}</strong>
+        <span class="text-secondary text-sm" style="display:block">${esc(v.destination)} ← ${esc(v.source || 'named volume')}</span>
+      </span>
+    </label>
+  `).join('');
+}
+
+async function showAddJobModal() {
+  const [containers, destinations] = await Promise.all([
+    api('GET', '/jobs/containers'),
+    api('GET', '/destinations'),
+  ]);
+  _buildJobModal(containers, destinations, null);
+}
+
+async function showEditJobModal(jobId) {
+  const [containers, destinations, jobs] = await Promise.all([
+    api('GET', '/jobs/containers'),
+    api('GET', '/destinations'),
+    api('GET', '/jobs'),
+  ]);
+  const job = (jobs || []).find(j => j.id === jobId);
+  if (!job) { alert('Job not found'); return; }
+  _buildJobModal(containers, destinations, job);
 }
 
 function updateDbFields() {
@@ -587,59 +662,47 @@ function updateDbFields() {
   el('jm-db-fields').style.display = val ? 'block' : 'none';
 }
 
-function addVolumeRow() {
-  const row = document.createElement('div');
-  row.className = 'volume-row';
-  row.innerHTML = `
-    <input class="form-control" placeholder="Source path" data-vol-src />
-    <input class="form-control" placeholder="Archive name" data-vol-name style="max-width:160px" />
-    <button class="btn btn-danger btn-sm" onclick="removeVolumeRow(this)">✕</button>
-  `;
-  el('jm-vol-rows').appendChild(row);
+function _collectJobBody() {
+  const name = el('jm-name').value.trim();
+  if (!name) throw new Error('Job name is required');
+
+  const containers = Array.from(document.querySelectorAll('input[name=job_containers]:checked'))
+    .map(c => c.value);
+
+  const volumes = Array.from(document.querySelectorAll('input[name=job_vol]:checked'))
+    .map(cb => ({ source: cb.dataset.volSrc, name: cb.dataset.volName }));
+
+  const dbType = el('jm-dbtype').value;
+  const destId = parseInt(el('jm-dest').value);
+  if (!destId) throw new Error('Please select a destination');
+
+  return {
+    name,
+    containers,
+    volumes,
+    db_type: dbType || null,
+    db_container: dbType ? el('jm-db-container').value.trim() : null,
+    db_name: dbType ? el('jm-db-name').value.trim() : null,
+    db_user: dbType ? el('jm-db-user').value.trim() : null,
+    db_password: dbType ? (el('jm-db-pass').value || null) : null,
+    destination_id: destId,
+    schedule_cron: el('jm-cron').value.trim(),
+    pre_stop: el('jm-prestop').checked,
+    retention_days: parseInt(el('jm-retention').value) || 30,
+    enabled: el('jm-enabled').checked,
+  };
 }
 
-function removeVolumeRow(btn) {
-  const rows = el('jm-vol-rows');
-  if (rows.children.length > 1) btn.closest('.volume-row').remove();
-}
-
-async function submitAddJob() {
+async function submitJob() {
   el('job-modal-error').innerHTML = '';
   try {
-    const name = el('jm-name').value.trim();
-    if (!name) throw new Error('Job name is required');
-
-    const containers = Array.from(document.querySelectorAll('input[name=job_containers]:checked'))
-      .map(c => c.value);
-
-    const volumes = Array.from(el('jm-vol-rows').querySelectorAll('.volume-row'))
-      .map(row => ({
-        source: row.querySelector('[data-vol-src]').value.trim(),
-        name: row.querySelector('[data-vol-name]').value.trim(),
-      }))
-      .filter(v => v.source);
-
-    const dbType = el('jm-dbtype').value;
-    const destId = parseInt(el('jm-dest').value);
-    if (!destId) throw new Error('Please select a destination');
-
-    const body = {
-      name,
-      containers,
-      volumes,
-      db_type: dbType || null,
-      db_container: dbType ? el('jm-db-container').value.trim() : null,
-      db_name: dbType ? el('jm-db-name').value.trim() : null,
-      db_user: dbType ? el('jm-db-user').value.trim() : null,
-      db_password: dbType ? el('jm-db-pass').value : null,
-      destination_id: destId,
-      schedule_cron: el('jm-cron').value.trim(),
-      pre_stop: el('jm-prestop').checked,
-      retention_days: parseInt(el('jm-retention').value) || 30,
-      enabled: el('jm-enabled').checked,
-    };
-
-    await api('POST', '/jobs', body);
+    const body = _collectJobBody();
+    const jobId = el('job-modal-overlay').querySelector('[data-job-id]').dataset.jobId;
+    if (jobId) {
+      await api('PUT', `/jobs/${jobId}`, body);
+    } else {
+      await api('POST', '/jobs', body);
+    }
     closeModal('job-modal-overlay');
     navigate('jobs');
   } catch (e) {
@@ -1482,13 +1545,15 @@ async function loadHistory(container, page = 1) {
 function renderHistory(container, data, currentPage) {
   const rows = (data.items || []).map(run => `
     <tr>
-      <td>${esc(run.job_name)}</td>
+      <td><span class="badge ${run.kind === 'stack' ? 'badge-info' : 'badge-secondary'}">${run.kind === 'stack' ? 'Stack' : 'Job'}</span></td>
+      <td>${esc(run.name)}</td>
+      <td>${esc(run.run_type || 'backup')}</td>
       <td>${statusBadge(run.status)}</td>
       <td>${formatDate(run.started_at)}</td>
       <td>${formatDuration(run.started_at, run.completed_at)}</td>
       <td>${formatBytes(run.size_bytes)}</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="viewRunLog(${run.id})">View Log</button>
+        <button class="btn btn-secondary btn-sm" onclick="viewRunLog(${run.id}, '${run.kind}')">View Log</button>
       </td>
     </tr>
   `).join('');
@@ -1507,10 +1572,10 @@ function renderHistory(container, data, currentPage) {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Job</th><th>Status</th><th>Started</th><th>Duration</th><th>Size</th><th>Log</th>
+          <th>Kind</th><th>Name</th><th>Type</th><th>Status</th><th>Started</th><th>Duration</th><th>Size</th><th>Log</th>
         </tr></thead>
         <tbody>
-          ${rows || '<tr><td colspan="6" class="text-secondary" style="text-align:center;padding:24px">No runs yet</td></tr>'}
+          ${rows || '<tr><td colspan="8" class="text-secondary" style="text-align:center;padding:24px">No runs yet</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -1519,9 +1584,10 @@ function renderHistory(container, data, currentPage) {
   `;
 }
 
-async function viewRunLog(runId) {
+async function viewRunLog(runId, kind) {
   try {
-    const run = await api('GET', `/status/runs/${runId}`);
+    const url = kind === 'stack' ? `/status/runs/stack/${runId}` : `/status/runs/${runId}`;
+    const run = await api('GET', url);
     if (!run) return;
 
     const logHtml = run.log_lines.map(line => {
@@ -1538,7 +1604,7 @@ async function viewRunLog(runId) {
       <div class="modal-overlay" id="log-modal-overlay">
         <div class="modal" style="max-width:800px">
           <button class="modal-close" onclick="closeModal('log-modal-overlay')">✕</button>
-          <div class="modal-title">Run Log: ${esc(run.job_name)}</div>
+          <div class="modal-title">Run Log: ${esc(run.name)}</div>
           <div class="flex gap-3 mb-4 text-sm text-secondary">
             <span>${statusBadge(run.status)}</span>
             <span>Started: ${formatDate(run.started_at)}</span>
@@ -1575,18 +1641,29 @@ async function viewRunLog(runId) {
 async function loadSettings(container) {
   container.innerHTML = `<div class="page-title">Settings</div><p class="text-secondary">Loading...</p>`;
   try {
-    const user = await api('GET', '/auth/me');
+    const [user, versionData] = await Promise.all([
+      api('GET', '/auth/me'),
+      api('GET', '/auth/version'),
+    ]);
     if (!user) return;
     state.user = user;
-    renderSettings(container, user);
+    renderSettings(container, user, versionData?.version || '?');
   } catch (e) {
     container.innerHTML = `<div class="page-title">Settings</div><div class="form-error">${esc(e.message)}</div>`;
   }
 }
 
-function renderSettings(container, user) {
+function renderSettings(container, user, version) {
   container.innerHTML = `
     <div class="page-title">Settings</div>
+
+    <div class="settings-section">
+      <h2>About</h2>
+      <p class="text-secondary text-sm">
+        BaumLabBackup &nbsp;·&nbsp;
+        <strong style="color:var(--text)">v${esc(version)}</strong>
+      </p>
+    </div>
 
     <div class="settings-section">
       <h2>Change Password</h2>

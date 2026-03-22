@@ -16,15 +16,27 @@ def list_containers() -> list[dict[str, Any]]:
     try:
         client = _client()
         containers = client.containers.list(all=True)
-        return [
-            {
+        result = []
+        for c in containers:
+            mounts = c.attrs.get("Mounts", [])
+            vols = [
+                {
+                    "name": m.get("Name") or os.path.basename(m.get("Source", "")),
+                    "source": m.get("Source", ""),
+                    "destination": m.get("Destination", ""),
+                    "type": m.get("Type", ""),
+                }
+                for m in mounts
+                if m.get("Type") in ("volume", "bind") and m.get("Source")
+            ]
+            result.append({
                 "id": c.short_id,
                 "name": c.name,
                 "status": c.status,
                 "image": c.image.tags[0] if c.image.tags else c.image.short_id,
-            }
-            for c in containers
-        ]
+                "volumes": vols,
+            })
+        return result
     except DockerException as exc:
         logger.error("list_containers failed: %s", exc)
         return []

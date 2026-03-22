@@ -139,10 +139,17 @@ def migrate_db() -> None:
     """Add new columns to existing tables (SQLite ALTER TABLE, idempotent)."""
     from sqlalchemy import text
     migrations = [
+        # users
         "ALTER TABLE users ADD COLUMN oidc_sub TEXT UNIQUE",
         "CREATE INDEX IF NOT EXISTS ix_users_oidc_sub ON users (oidc_sub)",
-        # Stack tables added later — CREATE TABLE IF NOT EXISTS handles fresh installs;
-        # existing installs without these tables will create them via init_db on restart.
+        # backup_runs — columns added after initial release
+        "ALTER TABLE backup_runs ADD COLUMN error TEXT",
+        # stack_runs — columns added after initial release
+        "ALTER TABLE stack_runs ADD COLUMN backup_path TEXT",
+        "ALTER TABLE stack_runs ADD COLUMN restore_target TEXT",
+        "ALTER TABLE stack_runs ADD COLUMN error TEXT",
+        "ALTER TABLE stack_runs ADD COLUMN log_lines TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE stack_runs ADD COLUMN size_bytes INTEGER",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

@@ -30,6 +30,34 @@ def _log(run_id: int, text: str, db) -> None:
     db.commit()
 
 
+def _read_env_from_docker(compose_project: str) -> str | None:
+    """
+    Read env vars from running containers in a compose project via Docker inspect.
+    Returns a .env-format string, or None if no containers are found.
+    """
+    try:
+        client = docker.from_env()
+        containers = client.containers.list(
+            filters={"label": f"com.docker.compose.project={compose_project}"}
+        )
+        if not containers:
+            return None
+        # Collect unique vars across all containers, deduplicated
+        seen: dict[str, str] = {}
+        skip_prefixes = ("PATH=", "HOSTNAME=", "HOME=", "TERM=", "SHLVL=", "PWD=")
+        for container in containers:
+            env_list = container.attrs.get("Config", {}).get("Env") or []
+            for entry in env_list:
+                if not any(entry.startswith(p) for p in skip_prefixes):
+                    key = entry.split("=", 1)[0]
+                    if key not in seen:
+                        seen[key] = entry
+        return "\n".join(seen.values()) if seen else None
+    except Exception as exc:
+        logger.warning("_read_env_from_docker failed: %s", exc)
+        return None
+
+
 def _tar_volume(volume_name: str, vol_dir: str) -> bool:
     """
     Tar a Docker volume's contents into vol_dir/{volume_name}.tar.gz using an
@@ -108,16 +136,27 @@ def execute_stack_backup(stack_id: int) -> None:
         # ── Encrypt .env ──────────────────────────────────────────────────────
         env_dir = os.path.join(tmp_dir, "env")
         os.makedirs(env_dir, exist_ok=True)
+        env_content: str | None = None
         if stack.env_path and os.path.isfile(stack.env_path):
-            _log(run_id, f"Encrypting .env from {stack.env_path}...", db)
+            _log(run_id, f"Reading .env from {stack.env_path}...", db)
             with open(stack.env_path, "r", encoding="utf-8") as fh:
                 env_content = fh.read()
+            _log(run_id, "  .env file read OK.", db)
+        else:
+            if stack.env_path:
+                _log(run_id, f"  .env not accessible at {stack.env_path!r} — reading from Docker inspect...", db)
+            else:
+                _log(run_id, "No .env path configured — reading env vars from Docker inspect...", db)
+            env_content = _read_env_from_docker(stack.compose_project)
+            if env_content is not None:
+                _log(run_id, f"  Read {len(env_content.splitlines())} env var(s) from running containers.", db)
+            else:
+                _log(run_id, "  WARNING: no running containers found for this project — env skipped.", db)
+        if env_content is not None:
             encrypted_env = encrypt(env_content)
             with open(os.path.join(env_dir, "dot-env.enc"), "w") as fh:
                 fh.write(encrypted_env)
             _log(run_id, "  .env encrypted OK.", db)
-        else:
-            _log(run_id, f"  WARNING: .env not found at {stack.env_path!r} — skipping", db)
 
         # ── Write manifest ────────────────────────────────────────────────────
         manifest = {

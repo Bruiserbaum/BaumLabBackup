@@ -121,6 +121,51 @@ def create_job(
     }
 
 
+@router.put("/{job_id}")
+def update_job(
+    job_id: int,
+    req: CreateJobRequest,
+    current_user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    job = db.query(BackupJob).filter(BackupJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    remove_backup_job(job_id)
+
+    # Keep existing password unless a new one is provided
+    db_password_encrypted = job.db_password_encrypted
+    if req.db_password:
+        db_password_encrypted = encrypt(req.db_password)
+
+    job.name = req.name
+    job.containers = json.dumps(req.containers)
+    job.volumes = json.dumps(req.volumes)
+    job.db_type = req.db_type or None
+    job.db_container = req.db_container or None
+    job.db_name = req.db_name or None
+    job.db_user = req.db_user or None
+    job.db_password_encrypted = db_password_encrypted
+    job.destination_id = req.destination_id
+    job.schedule_cron = req.schedule_cron
+    job.pre_stop = req.pre_stop
+    job.retention_days = req.retention_days
+    job.enabled = req.enabled
+    db.commit()
+
+    if job.enabled:
+        try:
+            add_backup_job(job.id, job.name, job.schedule_cron)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Job updated but scheduler failed: {exc}",
+            )
+
+    return {"id": job.id, "name": job.name}
+
+
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_job(
     job_id: int,

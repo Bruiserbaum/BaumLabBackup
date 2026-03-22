@@ -19,7 +19,7 @@ from auth import (
     verify_totp,
 )
 from config import (
-    SECRET_KEY, ALGORITHM,
+    SECRET_KEY, ALGORITHM, APP_VERSION,
     AUTHENTIK_HEADER_AUTH,
     OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URI,
 )
@@ -71,6 +71,11 @@ def login(req: LoginRequest, db=Depends(get_db)):
 
     token = create_access_token({"sub": user.username})
     return {"totp_required": False, "access_token": token}
+
+
+@router.get("/version")
+def get_version():
+    return {"version": APP_VERSION}
 
 
 @router.get("/me")
