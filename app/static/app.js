@@ -1261,11 +1261,14 @@ function renderDestFields() {
     `,
     smb: `
       <div class="form-group"><label>Host</label><input class="form-control" id="dm-smb-host" placeholder="192.168.1.10" /></div>
-      <div class="form-group"><label>Share Name</label><input class="form-control" id="dm-smb-share" placeholder="Backups" /></div>
       <div class="form-group"><label>Username</label><input class="form-control" id="dm-smb-user" /></div>
       <div class="form-group"><label>Password</label><input class="form-control" id="dm-smb-pass" type="password" /></div>
       <div class="form-group"><label>Domain (optional)</label><input class="form-control" id="dm-smb-domain" placeholder="WORKGROUP" /></div>
-      <div class="form-group"><label>Path (inside share)</label><input class="form-control" id="dm-smb-path" placeholder="baumlabbackup/" /></div>
+      <div class="form-group">
+        <label>Path — start with the share name: <code>ShareName/subfolder</code></label>
+        <input class="form-control" id="dm-smb-path" placeholder="Backups/LabBackup" />
+        <div class="text-sm text-secondary" style="margin-top:4px">e.g. \\\\192.168.1.10\Backups\LabBackup → enter <strong>Backups/LabBackup</strong></div>
+      </div>
     `,
     sftp: `
       <div class="form-group"><label>Host</label><input class="form-control" id="dm-sftp-host" /></div>
@@ -1300,7 +1303,6 @@ async function submitAddDest() {
     } else if (type === 'smb') {
       config = {
         host: el('dm-smb-host').value.trim(),
-        share: el('dm-smb-share').value.trim(),
         user: el('dm-smb-user').value.trim(),
         password: el('dm-smb-pass').value,
         domain: el('dm-smb-domain').value.trim(),
@@ -1376,11 +1378,14 @@ function renderEditDestFields(type, config) {
     `,
     smb: `
       <div class="form-group"><label>Host</label><input class="form-control" id="em-smb-host" value="${v('host')}" /></div>
-      <div class="form-group"><label>Share Name</label><input class="form-control" id="em-smb-share" value="${v('share')}" /></div>
       <div class="form-group"><label>Username</label><input class="form-control" id="em-smb-user" value="${v('user')}" /></div>
       <div class="form-group"><label>Password</label><input class="form-control" id="em-smb-pass" type="password" placeholder="${isSensitive(config.password) ? sensitive : ''}" /></div>
       <div class="form-group"><label>Domain (optional)</label><input class="form-control" id="em-smb-domain" value="${v('domain')}" /></div>
-      <div class="form-group"><label>Path (inside share)</label><input class="form-control" id="em-smb-path" value="${v('path')}" /></div>
+      <div class="form-group">
+        <label>Path — start with the share name: <code>ShareName/subfolder</code></label>
+        <input class="form-control" id="em-smb-path" value="${v('path')}" placeholder="Backups/LabBackup" />
+        <div class="text-sm text-secondary" style="margin-top:4px">e.g. \\\\${v('host') || '192.168.1.10'}\\Backups\\LabBackup → enter <strong>Backups/LabBackup</strong></div>
+      </div>
     `,
     sftp: `
       <div class="form-group"><label>Host</label><input class="form-control" id="em-sftp-host" value="${v('host')}" /></div>
@@ -1416,7 +1421,6 @@ async function submitEditDest(id) {
     } else if (type === 'smb') {
       config = {
         host: el('em-smb-host').value.trim(),
-        share: el('em-smb-share').value.trim(),
         user: el('em-smb-user').value.trim(),
         password: el('em-smb-pass').value,
         domain: el('em-smb-domain').value.trim(),
