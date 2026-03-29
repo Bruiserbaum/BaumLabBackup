@@ -2,6 +2,14 @@
 
 A self-hosted Docker backup manager with a dark-themed web UI.
 
+---
+
+## Screenshot
+
+![BaumLabBackup Dashboard](docs/screenshots/preview.png)
+
+---
+
 ## Features
 
 - **Backup Scheduling** — Cron-based scheduling via APScheduler
@@ -10,8 +18,11 @@ A self-hosted Docker backup manager with a dark-themed web UI.
 - **Multiple Destinations** — Backblaze B2, SMB/NAS, SFTP, Local storage via rclone
 - **Encryption** — Credentials encrypted at rest with Fernet (PBKDF2 key from SECRET_KEY)
 - **Authentication** — JWT with optional TOTP/MFA
+- **Authentik SSO** — Optional OIDC login via Authentik alongside standard username/password
 - **Retention** — Automatic cleanup of old backups via rclone
 - **Web UI** — Dark-themed single-page app: dashboard, jobs, destinations, history, settings
+
+---
 
 ## Quick Start
 
@@ -32,6 +43,8 @@ docker compose up -d
 
 3. Open [http://localhost:8765](http://localhost:8765) and log in as `admin`.
 
+---
+
 ## Configuration
 
 | Variable | Description | Default |
@@ -45,6 +58,8 @@ docker compose up -d
 | `OIDC_CLIENT_ID` | OAuth2 client ID from Authentik | — |
 | `OIDC_CLIENT_SECRET` | OAuth2 client secret from Authentik | — |
 | `OIDC_REDIRECT_URI` | Full callback URL registered in Authentik | — |
+
+---
 
 ## Destinations
 
@@ -60,6 +75,8 @@ SSH file transfer. Supports password or key-file authentication.
 ### Local
 Local path inside the container (mount an external path into the container as needed).
 
+---
+
 ## Authentik SSO (Optional)
 
 BaumLabBackup supports OIDC login via Authentik. When enabled, a **Login with Authentik** button appears on the login page alongside the standard username/password form.
@@ -74,6 +91,8 @@ BaumLabBackup supports OIDC login via Authentik. When enabled, a **Login with Au
 
 First-time SSO users get a local account created automatically. Existing password accounts are unaffected.
 
+---
+
 ## Security Notes
 
 - All destination credentials are encrypted in the database using Fernet symmetric encryption.
@@ -81,6 +100,16 @@ First-time SSO users get a local account created automatically. Existing passwor
 - The Docker socket is mounted read-only for container listing; write access is needed for stop/start — adjust the compose file if you only need listing.
 - TOTP/MFA can be enabled per-user from the Settings page.
 
-## License
+---
 
-MIT
+## License and Project Status
+
+This repository is a personal project shared publicly for learning, reference, portfolio, and experimentation purposes.
+
+Development may include AI-assisted ideation, drafting, refactoring, or code generation. All code and content published here were reviewed, selected, and curated before release.
+
+This project is licensed under the Apache License 2.0. See the LICENSE file for details.
+
+Unless explicitly stated otherwise, this repository is provided as-is, without warranty, support obligation, or guarantee of suitability for production use.
+
+Any third-party libraries, assets, icons, fonts, models, or dependencies used by this project remain subject to their own licenses and terms.
